@@ -1,4 +1,61 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+// ─── SUPABASE CLIENT ──────────────────────────────────────────────────────────
+const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
+);
+
+// ─── SUPABASE DATA HELPERS ────────────────────────────────────────────────────
+const db = {
+  // Load all user data in one shot
+  loadAll: async (userId) => {
+    const [incomes, bills, goals, streak] = await Promise.all([
+      supabase.from("income_sources").select("*").eq("user_id", userId).eq("is_active", true),
+      supabase.from("bills").select("*").eq("user_id", userId).eq("is_active", true).order("due_day"),
+      supabase.from("goals").select("*").eq("user_id", userId).order("created_at"),
+      supabase.from("user_streaks").select("*").eq("user_id", userId).single(),
+    ]);
+    return {
+      incomes: incomes.data || [],
+      bills: bills.data || [],
+      goals: goals.data || [],
+      streak: streak.data?.savings_streak || 0,
+      earnedBadges: streak.data?.earned_badges || [],
+    };
+  },
+
+  // Income
+  saveIncome: (income, userId) =>
+    supabase.from("income_sources").upsert({ ...income, user_id: userId }),
+  deleteIncome: (id) =>
+    supabase.from("income_sources").update({ is_active: false }).eq("id", id),
+
+  // Bills
+  saveBill: (bill, userId) =>
+    supabase.from("bills").upsert({ ...bill, user_id: userId }),
+  deleteBill: (id) =>
+    supabase.from("bills").update({ is_active: false }).eq("id", id),
+
+  // Goals
+  saveGoal: (goal, userId) =>
+    supabase.from("goals").upsert({ ...goal, user_id: userId }),
+  deleteGoal: (id) =>
+    supabase.from("goals").delete().eq("id", id),
+
+  // Streak & badges
+  saveStreak: (userId, streak, badges) =>
+    supabase.from("user_streaks").upsert({
+      user_id: userId,
+      savings_streak: streak,
+      earned_badges: badges,
+    }),
+
+  // Profile name
+  saveName: (userId, name) =>
+    supabase.from("profiles").update({ name }).eq("id", userId),
+};
 
 // ─── CONSTANTS & CONFIG ──────────────────────────────────────────────────────
 // ── AI config — model is set in api/chat.js on the server
@@ -720,8 +777,95 @@ const injectStyles = () => {
     .streak-dot.filled { background: var(--primary); }
     .streak-dot.empty { background: var(--surface2); border: 1.5px solid var(--border); }
 
-    /* ONBOARDING */
-    .onboard-screen {
+    /* AUTH SCREEN */
+    .auth-screen {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 40px 24px;
+      background: var(--bg);
+    }
+    .auth-card {
+      width: 100%;
+      max-width: 380px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 32px 28px;
+    }
+    .auth-logo {
+      font-family: var(--font-display);
+      font-size: 28px;
+      color: var(--primary);
+      text-align: center;
+      margin-bottom: 6px;
+    }
+    .auth-tagline {
+      font-size: 13px;
+      color: var(--text2);
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    .auth-tabs {
+      display: flex;
+      background: var(--surface2);
+      border-radius: var(--radius-sm);
+      padding: 3px;
+      margin-bottom: 24px;
+    }
+    .auth-tab {
+      flex: 1;
+      padding: 9px;
+      border-radius: 8px;
+      border: none;
+      background: none;
+      font-family: var(--font-body);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      color: var(--text2);
+      transition: all 0.15s;
+    }
+    .auth-tab.active {
+      background: var(--surface);
+      color: var(--text);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+    }
+    .auth-error {
+      background: rgba(255,77,77,0.1);
+      border: 1px solid rgba(255,77,77,0.3);
+      border-radius: var(--radius-sm);
+      padding: 10px 14px;
+      font-size: 13px;
+      color: var(--danger);
+      margin-bottom: 14px;
+    }
+    .auth-success {
+      background: rgba(0,214,143,0.1);
+      border: 1px solid rgba(0,214,143,0.3);
+      border-radius: var(--radius-sm);
+      padding: 10px 14px;
+      font-size: 13px;
+      color: var(--primary);
+      margin-bottom: 14px;
+    }
+    .auth-divider {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 20px 0;
+    }
+    .auth-divider-line { flex: 1; height: 1px; background: var(--border); }
+    .auth-divider-text { font-size: 12px; color: var(--text3); }
+    .auth-footer {
+      text-align: center;
+      font-size: 12px;
+      color: var(--text3);
+      margin-top: 20px;
+      line-height: 1.6;
+    }
       min-height: 100vh;
       display: flex;
       flex-direction: column;
@@ -944,6 +1088,130 @@ const Modal = ({ show, onClose, title, children }) => {
         <div className="modal-handle" />
         {title && <div className="modal-title">{title}</div>}
         {children}
+      </div>
+    </div>
+  );
+};
+
+// ─── AUTH SCREEN ──────────────────────────────────────────────────────────────
+const AuthScreen = ({ onAuth }) => {
+  const [mode, setMode] = useState("login"); // "login" | "signup" | "forgot"
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  const handleSubmit = async () => {
+    setError(""); setSuccess("");
+    if (!email || (!password && mode !== "forgot")) return setError("Please fill in all fields.");
+    if (mode === "signup" && password.length < 6) return setError("Password must be at least 6 characters.");
+    setLoading(true);
+
+    try {
+      if (mode === "login") {
+        const { data, error: e } = await supabase.auth.signInWithPassword({ email, password });
+        if (e) throw e;
+        onAuth(data.user);
+
+      } else if (mode === "signup") {
+        const { data, error: e } = await supabase.auth.signUp({ email, password });
+        if (e) throw e;
+        // Save name to profile
+        if (data.user && name) {
+          await supabase.from("profiles").upsert({ id: data.user.id, name });
+        }
+        setSuccess("Account created! Check your email to confirm, then log in.");
+        setMode("login");
+
+      } else if (mode === "forgot") {
+        const { error: e } = await supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: window.location.origin,
+        });
+        if (e) throw e;
+        setSuccess("Password reset email sent! Check your inbox.");
+        setMode("login");
+      }
+    } catch (e) {
+      setError(e.message || "Something went wrong. Please try again.");
+    }
+    setLoading(false);
+  };
+
+  const handleKey = (e) => { if (e.key === "Enter") handleSubmit(); };
+
+  return (
+    <div className="auth-screen">
+      <div className="auth-card">
+        <div className="auth-logo">ClearPath</div>
+        <div className="auth-tagline">Your financial truth, in 10 seconds.</div>
+
+        {mode !== "forgot" && (
+          <div className="auth-tabs">
+            <button className={`auth-tab ${mode === "login" ? "active" : ""}`} onClick={() => { setMode("login"); setError(""); setSuccess(""); }}>Log In</button>
+            <button className={`auth-tab ${mode === "signup" ? "active" : ""}`} onClick={() => { setMode("signup"); setError(""); setSuccess(""); }}>Sign Up</button>
+          </div>
+        )}
+
+        {error && <div className="auth-error">⚠️ {error}</div>}
+        {success && <div className="auth-success">✅ {success}</div>}
+
+        {mode === "forgot" ? (
+          <>
+            <div style={{ fontSize: 14, color: "var(--text2)", marginBottom: 20, lineHeight: 1.6 }}>
+              Enter your email and we'll send you a link to reset your password.
+            </div>
+            <div className="input-group">
+              <label className="input-label">Email Address</label>
+              <input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)}
+                onKeyDown={handleKey} placeholder="you@example.com" autoFocus />
+            </div>
+            <button className="btn btn-primary btn-full" onClick={handleSubmit} disabled={loading}
+              style={{ opacity: loading ? 0.7 : 1, marginTop: 8 }}>
+              {loading ? "Sending..." : "Send Reset Link"}
+            </button>
+            <button onClick={() => { setMode("login"); setError(""); }}
+              style={{ display: "block", width: "100%", textAlign: "center", marginTop: 14, background: "none", border: "none", color: "var(--text2)", cursor: "pointer", fontSize: 14 }}>
+              ← Back to Log In
+            </button>
+          </>
+        ) : (
+          <>
+            {mode === "signup" && (
+              <div className="input-group">
+                <label className="input-label">Your First Name</label>
+                <input className="input" type="text" value={name} onChange={e => setName(e.target.value)}
+                  onKeyDown={handleKey} placeholder="Alex" autoFocus />
+              </div>
+            )}
+            <div className="input-group">
+              <label className="input-label">Email Address</label>
+              <input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)}
+                onKeyDown={handleKey} placeholder="you@example.com" autoFocus={mode === "login"} />
+            </div>
+            <div className="input-group">
+              <label className="input-label">Password</label>
+              <input className="input" type="password" value={password} onChange={e => setPassword(e.target.value)}
+                onKeyDown={handleKey} placeholder={mode === "signup" ? "At least 6 characters" : "Your password"} />
+            </div>
+            <button className="btn btn-primary btn-full" onClick={handleSubmit} disabled={loading}
+              style={{ opacity: loading ? 0.7 : 1, marginTop: 4 }}>
+              {loading ? (mode === "login" ? "Logging in..." : "Creating account...") : (mode === "login" ? "Log In" : "Create Account")}
+            </button>
+            {mode === "login" && (
+              <button onClick={() => { setMode("forgot"); setError(""); }}
+                style={{ display: "block", width: "100%", textAlign: "center", marginTop: 14, background: "none", border: "none", color: "var(--text2)", cursor: "pointer", fontSize: 13 }}>
+                Forgot your password?
+              </button>
+            )}
+          </>
+        )}
+
+        <div className="auth-footer">
+          By using ClearPath you agree to our Terms of Service.<br />
+          Your data is encrypted and never sold.
+        </div>
       </div>
     </div>
   );
@@ -2138,7 +2406,7 @@ USER FINANCIAL SNAPSHOT:
 };
 
 // ─── SETTINGS & BADGES SCREEN ─────────────────────────────────────────────────
-const SettingsScreen = ({ state, onUpdate, onThemeToggle, onFullReset }) => {
+const SettingsScreen = ({ state, onUpdate, onThemeToggle, onFullReset, onSignOut }) => {
   const { user, earnedBadges = [], streak = 0, incomes = [], bills = [], goals = [] } = state;
   const isLight = document.body.classList.contains("light-mode");
   const [confirmReset, setConfirmReset] = useState(null); // null | 'income' | 'bills' | 'goals' | 'all'
@@ -2307,9 +2575,17 @@ const SettingsScreen = ({ state, onUpdate, onThemeToggle, onFullReset }) => {
         </div>
         <div className="settings-row" style={{ borderBottom: "none" }}>
           <div className="settings-row-info"><div className="settings-row-label">🔒 Your data</div>
-            <div className="settings-row-sub">Stored locally on your device</div>
+            <div className="settings-row-sub">Encrypted and stored securely in the cloud</div>
           </div>
         </div>
+      </div>
+
+      {/* Sign Out */}
+      <div className="section-header"><span className="section-title">Account</span></div>
+      <div className="card">
+        <button className="btn btn-secondary btn-full" onClick={onSignOut} style={{ marginBottom: 0 }}>
+          🚪 Sign Out
+        </button>
       </div>
 
       <div style={{ textAlign: "center", padding: "16px 24px 24px", color: "var(--text3)", fontSize: 12 }}>
@@ -2358,19 +2634,79 @@ const SettingsScreen = ({ state, onUpdate, onThemeToggle, onFullReset }) => {
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function ClearPath() {
-  const [state, setState] = useState(() => loadState());
+  const [authUser, setAuthUser] = useState(null);       // Supabase user object
+  const [authLoading, setAuthLoading] = useState(true); // checking session on load
+  const [state, setState] = useState(defaultState);
   const [tab, setTab] = useState("home");
   const [isLight, setIsLight] = useState(false);
 
   useEffect(() => { injectStyles(); }, []);
 
+  // ── Check for existing session on mount ──────────────────────────────────
   useEffect(() => {
-    saveState(state);
-  }, [state]);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        setAuthUser(session.user);
+      }
+      setAuthLoading(false);
+    });
+
+    // Listen for login/logout events
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuthUser(session?.user ?? null);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // ── Load user data from Supabase when logged in ──────────────────────────
+  useEffect(() => {
+    if (!authUser) return;
+    db.loadAll(authUser.id).then(data => {
+      setState(prev => ({
+        ...prev,
+        ...data,
+        user: { ...prev.user, name: authUser.user_metadata?.name || prev.user.name },
+        onboarded: data.incomes.length > 0 || data.bills.length > 0,
+      }));
+    });
+  }, [authUser]);
 
   const updateState = useCallback((partial) => {
     setState(prev => ({ ...prev, ...partial }));
   }, []);
+
+  // ── Wrap updateState to also sync to Supabase ────────────────────────────
+  const updateAndSync = useCallback(async (partial) => {
+    setState(prev => ({ ...prev, ...partial }));
+    if (!authUser) return;
+
+    // Sync whichever collections changed
+    if (partial.incomes) {
+      for (const inc of partial.incomes) {
+        if (!inc._deleted) await db.saveIncome(inc, authUser.id);
+      }
+    }
+    if (partial.bills) {
+      for (const bill of partial.bills) {
+        if (!bill._deleted) await db.saveBill(bill, authUser.id);
+      }
+    }
+    if (partial.goals) {
+      for (const goal of partial.goals) {
+        if (!goal._deleted) await db.saveGoal(goal, authUser.id);
+      }
+    }
+    if (partial.earnedBadges || partial.streak !== undefined) {
+      await db.saveStreak(
+        authUser.id,
+        partial.streak ?? state.streak,
+        partial.earnedBadges ?? state.earnedBadges
+      );
+    }
+    if (partial.user?.name) {
+      await db.saveName(authUser.id, partial.user.name);
+    }
+  }, [authUser, state]);
 
   const toggleTheme = useCallback(() => {
     setIsLight(prev => {
@@ -2380,18 +2716,62 @@ export default function ClearPath() {
     });
   }, []);
 
-  const completeOnboarding = useCallback(({ name, incomes, bills, earnedBadges }) => {
-    setState(prev => ({ ...prev, user: { ...prev.user, name }, incomes, bills, earnedBadges, onboarded: true }));
+  const completeOnboarding = useCallback(async ({ name, incomes, bills, earnedBadges }) => {
+    const newState = { ...state, user: { ...state.user, name }, incomes, bills, earnedBadges, onboarded: true };
+    setState(newState);
+    if (authUser) {
+      await db.saveName(authUser.id, name);
+      for (const inc of incomes) await db.saveIncome(inc, authUser.id);
+      for (const bill of bills) await db.saveBill(bill, authUser.id);
+      await db.saveStreak(authUser.id, 0, earnedBadges);
+    }
+  }, [authUser, state]);
+
+  const handleSignOut = useCallback(async () => {
+    await supabase.auth.signOut();
+    setState(defaultState);
+    setTab("home");
+    setAuthUser(null);
   }, []);
 
-  const fullReset = useCallback(() => {
-    localStorage.removeItem(STORAGE_KEY);
+  const fullReset = useCallback(async () => {
+    if (authUser) {
+      // Delete all user data from Supabase
+      await Promise.all([
+        supabase.from("income_sources").delete().eq("user_id", authUser.id),
+        supabase.from("bills").delete().eq("user_id", authUser.id),
+        supabase.from("goals").delete().eq("user_id", authUser.id),
+        supabase.from("user_streaks").delete().eq("user_id", authUser.id),
+      ]);
+    }
     setState({ ...defaultState });
     setTab("home");
     document.body.classList.remove("light-mode");
     setIsLight(false);
-  }, []);
+  }, [authUser]);
 
+  // ── Loading splash while checking auth ────────────────────────────────────
+  if (authLoading) {
+    return (
+      <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
+        <div style={{ fontFamily: "var(--font-display)", fontSize: 28, color: "var(--primary)" }}>ClearPath</div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <span className="loading-dot" /><span className="loading-dot" /><span className="loading-dot" />
+        </div>
+      </div>
+    );
+  }
+
+  // ── Not logged in — show auth screen ─────────────────────────────────────
+  if (!authUser) {
+    return (
+      <div style={{ minHeight: "100vh", background: "var(--bg)" }}>
+        <AuthScreen onAuth={setAuthUser} />
+      </div>
+    );
+  }
+
+  // ── Logged in but not onboarded yet ───────────────────────────────────────
   if (!state.onboarded) {
     return (
       <div style={{ minHeight: "100vh", background: "var(--bg)" }}>
@@ -2410,15 +2790,15 @@ export default function ClearPath() {
 
   const renderScreen = () => {
     switch (tab) {
-      case "home": return <SnapshotScreen state={state} onNav={setTab} />;
-      case "afford": return <AffordScreen state={state} />;
-      case "income": return <IncomeScreen state={state} onUpdate={updateState} />;
-      case "bills": return <BillsScreen state={state} onUpdate={updateState} />;
-      case "goals": return <GoalsScreen state={state} onUpdate={updateState} />;
+      case "home":     return <SnapshotScreen state={state} onNav={setTab} />;
+      case "afford":   return <AffordScreen state={state} />;
+      case "income":   return <IncomeScreen state={state} onUpdate={updateAndSync} />;
+      case "bills":    return <BillsScreen state={state} onUpdate={updateAndSync} />;
+      case "goals":    return <GoalsScreen state={state} onUpdate={updateAndSync} />;
       case "forecast": return <ForecastScreen state={state} />;
-      case "ai": return <AIScreen state={state} onUpdate={updateState} />;
-      case "settings": return <SettingsScreen state={state} onUpdate={updateState} onThemeToggle={toggleTheme} onFullReset={fullReset} />;
-      default: return <SnapshotScreen state={state} onNav={setTab} />;
+      case "ai":       return <AIScreen state={state} onUpdate={updateAndSync} />;
+      case "settings": return <SettingsScreen state={state} onUpdate={updateAndSync} onThemeToggle={toggleTheme} onFullReset={fullReset} onSignOut={handleSignOut} />;
+      default:         return <SnapshotScreen state={state} onNav={setTab} />;
     }
   };
 
@@ -2427,7 +2807,6 @@ export default function ClearPath() {
       <div className="app-shell">
         {renderScreen()}
 
-        {/* Extra nav items accessible from home */}
         {tab === "settings" && (
           <div style={{ position: "fixed", bottom: 82, left: "50%", transform: "translateX(-50%)", maxWidth: 430, width: "100%", background: "var(--bg)", padding: "8px 16px", borderTop: "1px solid var(--border)", display: "flex", gap: 8, zIndex: 99 }}>
             <button className="btn btn-secondary btn-sm" style={{ flex: 1 }} onClick={() => setTab("income")}>💼 Income</button>

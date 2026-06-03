@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-// ─── SUPABASE CLIENT ─────────────────────────────────────────────────────────
+// ─── SUPABASE CLIENT ──────────────────────────────────────────────────────────
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
   import.meta.env.VITE_SUPABASE_ANON_KEY
 );
 
-// ─── SUPABASE DATA HELPERS ───────────────────────────────────────────────────
+// ─── SUPABASE DATA HELPERS ────────────────────────────────────────────────────
 const db = {
   // Load all user data in one shot
   loadAll: async (userId) => {
@@ -596,12 +596,22 @@ const injectStyles = () => {
     .goal-meta { font-size: 12px; color: var(--text2); margin-top: 2px; }
 
     /* AI CHAT */
+    .ai-screen {
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - 60px);
+      overflow: hidden;
+    }
     .ai-messages {
       display: flex;
       flex-direction: column;
       gap: 12px;
-      padding: 16px;
+      padding: 16px 16px 24px;
+      overflow-y: auto;
+      flex: 1;
+      scrollbar-width: none;
     }
+    .ai-messages::-webkit-scrollbar { display: none; }
     .ai-message {
       max-width: 85%;
       padding: 12px 16px;
@@ -624,13 +634,18 @@ const injectStyles = () => {
       border-bottom-left-radius: 4px;
     }
     .ai-input-bar {
-      position: sticky;
-      bottom: 90px;
+      position: fixed;
+      bottom: 65px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 100%;
+      max-width: 430px;
       background: var(--bg);
-      padding: 12px 16px;
+      padding: 10px 16px 12px;
       display: flex;
       gap: 10px;
       border-top: 1px solid var(--border);
+      z-index: 50;
     }
     .ai-input-bar .input { flex: 1; padding: 12px 14px; }
 
@@ -2365,7 +2380,7 @@ USER FINANCIAL SNAPSHOT:
   const handleKey = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
 
   return (
-    <div className="screen" style={{ display: "flex", flexDirection: "column", paddingBottom: 160 }}>
+    <div className="screen" style={{ paddingBottom: 0, display: "flex", flexDirection: "column", height: "100%" }}>
       <div className="header">
         <div>
           <div className="header-title">AI Assistant 🤖</div>
@@ -2373,38 +2388,40 @@ USER FINANCIAL SNAPSHOT:
         </div>
       </div>
 
-      {messages.length === 0 ? (
-        <div>
-          <div style={{ padding: "16px 16px 0", textAlign: "center" }}>
-            <div style={{ fontSize: 48, marginBottom: 12 }}>🤖</div>
-            <div style={{ fontSize: 16, fontWeight: 600, color: "var(--text)" }}>Ask me anything about your money</div>
-            <div style={{ fontSize: 13, color: "var(--text2)", marginTop: 8, lineHeight: 1.5 }}>
-              I know your income, bills, and goals. Just ask!
+      <div className="ai-messages" style={{ paddingBottom: "140px" }}>
+        {messages.length === 0 ? (
+          <div>
+            <div style={{ padding: "16px 0 0", textAlign: "center" }}>
+              <div style={{ fontSize: 48, marginBottom: 12 }}>🤖</div>
+              <div style={{ fontSize: 16, fontWeight: 600, color: "var(--text)" }}>Ask me anything about your money</div>
+              <div style={{ fontSize: 13, color: "var(--text2)", marginTop: 8, lineHeight: 1.5 }}>
+                I know your income, bills, and goals. Just ask!
+              </div>
+            </div>
+            <div style={{ paddingTop: 16 }}>
+              <div className="card-label" style={{ marginBottom: 10 }}>Try asking:</div>
+              {SUGGESTED_QUESTIONS.map(q => (
+                <button key={q} onClick={() => sendMessage(q)}
+                  style={{ display: "block", width: "100%", textAlign: "left", padding: "12px 16px", marginBottom: 8, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, color: "var(--text)", cursor: "pointer", fontSize: 14, fontFamily: "var(--font-body)" }}>
+                  💬 {q}
+                </button>
+              ))}
             </div>
           </div>
-          <div style={{ padding: 16 }}>
-            <div className="card-label" style={{ marginBottom: 10 }}>Try asking:</div>
-            {SUGGESTED_QUESTIONS.map(q => (
-              <button key={q} onClick={() => sendMessage(q)}
-                style={{ display: "block", width: "100%", textAlign: "left", padding: "12px 16px", marginBottom: 8, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, color: "var(--text)", cursor: "pointer", fontSize: 14, fontFamily: "var(--font-body)" }}>
-                💬 {q}
-              </button>
+        ) : (
+          <>
+            {messages.map((m, i) => (
+              <div key={i} className={`ai-message ${m.role}`}>{m.content}</div>
             ))}
-          </div>
-        </div>
-      ) : (
-        <div className="ai-messages">
-          {messages.map((m, i) => (
-            <div key={i} className={`ai-message ${m.role}`}>{m.content}</div>
-          ))}
-          {loading && (
-            <div className="ai-message assistant">
-              <LoadingDots />
-            </div>
-          )}
-          <div ref={bottomRef} />
-        </div>
-      )}
+            {loading && (
+              <div className="ai-message assistant">
+                <LoadingDots />
+              </div>
+            )}
+            <div ref={bottomRef} />
+          </>
+        )}
+      </div>
 
       <div className="ai-input-bar">
         <input ref={inputRef} className="input" value={input} onChange={e => setInput(e.target.value)}

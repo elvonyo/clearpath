@@ -26,35 +26,50 @@ const db = {
     };
   },
 
-  // Income
-  saveIncome: (income, userId) =>
-    supabase.from("income_sources").upsert({ ...income, user_id: userId }),
+  // Save a single income (insert or update by id)
+  saveIncome: async (income, userId) => {
+    const { id, ...fields } = income;
+    if (id) {
+      return supabase.from("income_sources").update({ ...fields, user_id: userId }).eq("id", id);
+    }
+    return supabase.from("income_sources").insert({ id: crypto.randomUUID(), ...fields, user_id: userId });
+  },
   deleteIncome: (id) =>
-    supabase.from("income_sources").update({ is_active: false }).eq("id", id),
+    supabase.from("income_sources").delete().eq("id", id),
 
-  // Bills
-  saveBill: (bill, userId) =>
-    supabase.from("bills").upsert({ ...bill, user_id: userId }),
+  // Save a single bill
+  saveBill: async (bill, userId) => {
+    const { id, ...fields } = bill;
+    if (id) {
+      return supabase.from("bills").update({ ...fields, user_id: userId }).eq("id", id);
+    }
+    return supabase.from("bills").insert({ id: crypto.randomUUID(), ...fields, user_id: userId });
+  },
   deleteBill: (id) =>
-    supabase.from("bills").update({ is_active: false }).eq("id", id),
+    supabase.from("bills").delete().eq("id", id),
 
-  // Goals
-  saveGoal: (goal, userId) =>
-    supabase.from("goals").upsert({ ...goal, user_id: userId }),
+  // Save a single goal
+  saveGoal: async (goal, userId) => {
+    const { id, ...fields } = goal;
+    if (id) {
+      return supabase.from("goals").update({ ...fields, user_id: userId }).eq("id", id);
+    }
+    return supabase.from("goals").insert({ id: crypto.randomUUID(), ...fields, user_id: userId });
+  },
   deleteGoal: (id) =>
     supabase.from("goals").delete().eq("id", id),
 
-  // Streak & badges
+  // Streak & badges — always upsert (single row per user)
   saveStreak: (userId, streak, badges) =>
     supabase.from("user_streaks").upsert({
       user_id: userId,
       savings_streak: streak,
       earned_badges: badges,
-    }),
+    }, { onConflict: "user_id" }),
 
   // Profile name
   saveName: (userId, name) =>
-    supabase.from("profiles").update({ name }).eq("id", userId),
+    supabase.from("profiles").upsert({ id: userId, name }, { onConflict: "id" }),
 };
 
 // ─── CONSTANTS & CONFIG ──────────────────────────────────────────────────────
@@ -1695,18 +1710,18 @@ const IncomeScreen = ({ state, onUpdate }) => {
 
   const save = () => {
     if (!form.amount) return;
-    const income = { ...form, id: editId || Date.now().toString(), amount: parseFloat(form.amount) };
+    const income = { ...form, id: editId || crypto.randomUUID(), amount: parseFloat(form.amount) };
     if (editId) {
-      onUpdate({ incomes: incomes.map(i => i.id === editId ? income : i) });
+      onUpdate({ incomes: incomes.map(i => i.id === editId ? income : i), _syncAction: "saveIncome", _syncItem: income });
     } else {
-      onUpdate({ incomes: [...incomes, income] });
+      onUpdate({ incomes: [...incomes, income], _syncAction: "saveIncome", _syncItem: income });
     }
     setForm({ name: "Primary Income", amount: "", frequency: "biweekly", type: "salary" });
     setShowAdd(false);
     setEditId(null);
   };
 
-  const del = (id) => onUpdate({ incomes: incomes.filter(i => i.id !== id) });
+  const del = (id) => onUpdate({ incomes: incomes.filter(i => i.id !== id), _syncAction: "deleteIncome", _syncItem: { id } });
 
   const startEdit = (income) => {
     setForm({ name: income.name, amount: income.amount.toString(), frequency: income.frequency, type: income.type });
@@ -1824,18 +1839,18 @@ const BillsScreen = ({ state, onUpdate }) => {
 
   const save = () => {
     if (!form.name || !form.amount) return;
-    const bill = { ...form, id: editId || Date.now().toString(), amount: parseFloat(form.amount) };
+    const bill = { ...form, id: editId || crypto.randomUUID(), amount: parseFloat(form.amount) };
     if (editId) {
-      onUpdate({ bills: bills.map(b => b.id === editId ? bill : b) });
+      onUpdate({ bills: bills.map(b => b.id === editId ? bill : b), _syncAction: "saveBill", _syncItem: bill });
     } else {
-      onUpdate({ bills: [...bills, bill], earnedBadges: [...(state.earnedBadges || []), "bill_tracker"].filter((v, i, a) => a.indexOf(v) === i) });
+      onUpdate({ bills: [...bills, bill], earnedBadges: [...(state.earnedBadges || []), "bill_tracker"].filter((v, i, a) => a.indexOf(v) === i), _syncAction: "saveBill", _syncItem: bill });
     }
     setForm({ name: "", amount: "", category: "housing", recurrence: "monthly", dueDay: "1", isAutopay: false, active: true });
     setShowAdd(false);
     setEditId(null);
   };
 
-  const del = (id) => onUpdate({ bills: bills.filter(b => b.id !== id) });
+  const del = (id) => onUpdate({ bills: bills.filter(b => b.id !== id), _syncAction: "deleteBill", _syncItem: { id } });
 
   const startEdit = (bill) => {
     setForm({ name: bill.name, amount: bill.amount.toString(), category: bill.category, recurrence: bill.recurrence, dueDay: bill.dueDay?.toString() || "1", isAutopay: bill.isAutopay || false, active: bill.active !== false });
@@ -1993,11 +2008,11 @@ const GoalsScreen = ({ state, onUpdate }) => {
 
   const saveGoal = () => {
     if (!form.name || !form.targetAmount) return;
-    const goal = { ...form, id: editId || Date.now().toString(), emoji: selectedEmoji, targetAmount: parseFloat(form.targetAmount), currentAmount: editId ? goals.find(g => g.id === editId)?.currentAmount || 0 : 0, perPaycheck: parseFloat(form.perPaycheck) || 0 };
+    const goal = { ...form, id: editId || crypto.randomUUID(), emoji: selectedEmoji, targetAmount: parseFloat(form.targetAmount), currentAmount: editId ? goals.find(g => g.id === editId)?.currentAmount || 0 : 0, perPaycheck: parseFloat(form.perPaycheck) || 0 };
     if (editId) {
-      onUpdate({ goals: goals.map(g => g.id === editId ? goal : g) });
+      onUpdate({ goals: goals.map(g => g.id === editId ? goal : g), _syncAction: "saveGoal", _syncItem: goal });
     } else {
-      onUpdate({ goals: [...goals, goal], earnedBadges: [...(state.earnedBadges || []), "goal_setter"].filter((v, i, a) => a.indexOf(v) === i) });
+      onUpdate({ goals: [...goals, goal], earnedBadges: [...(state.earnedBadges || []), "goal_setter"].filter((v, i, a) => a.indexOf(v) === i), _syncAction: "saveGoal", _syncItem: goal });
     }
     setForm({ name: "", emoji: "🎯", targetAmount: "", perPaycheck: "" });
     setSelectedEmoji("🎯");
@@ -2015,13 +2030,14 @@ const GoalsScreen = ({ state, onUpdate }) => {
       if (completed) setShowCelebration(true);
       return { ...g, currentAmount: newAmount, completed };
     });
+    const updatedGoal = updatedGoals.find(g => g.id === goalId);
     const newBadges = updatedGoals.some(g => g.completed) ? [...(state.earnedBadges || []), "goals_complete"].filter((v, i, a) => a.indexOf(v) === i) : state.earnedBadges;
-    onUpdate({ goals: updatedGoals, earnedBadges: newBadges });
+    onUpdate({ goals: updatedGoals, earnedBadges: newBadges, _syncAction: "saveGoal", _syncItem: updatedGoal });
     setContribAmount("");
     setShowContrib(null);
   };
 
-  const del = (id) => onUpdate({ goals: goals.filter(g => g.id !== id) });
+  const del = (id) => onUpdate({ goals: goals.filter(g => g.id !== id), _syncAction: "deleteGoal", _syncItem: { id } });
 
   return (
     <div className="screen">
@@ -2715,31 +2731,27 @@ export default function ClearPath() {
     setState(prev => ({ ...prev, ...partial }));
     if (!authUser) return;
 
-    // Sync whichever collections changed
-    if (partial.incomes) {
-      for (const inc of partial.incomes) {
-        if (!inc._deleted) await db.saveIncome(inc, authUser.id);
+    try {
+      // Each screen passes _syncAction to tell us exactly what to do
+      const { _syncAction, _syncItem } = partial;
+
+      if (_syncAction === "saveIncome")   await db.saveIncome(_syncItem, authUser.id);
+      if (_syncAction === "deleteIncome") await db.deleteIncome(_syncItem.id);
+      if (_syncAction === "saveBill")     await db.saveBill(_syncItem, authUser.id);
+      if (_syncAction === "deleteBill")   await db.deleteBill(_syncItem.id);
+      if (_syncAction === "saveGoal")     await db.saveGoal(_syncItem, authUser.id);
+      if (_syncAction === "deleteGoal")   await db.deleteGoal(_syncItem.id);
+      if (_syncAction === "saveName")     await db.saveName(authUser.id, _syncItem);
+
+      if (partial.earnedBadges || partial.streak !== undefined) {
+        await db.saveStreak(
+          authUser.id,
+          partial.streak ?? state.streak,
+          partial.earnedBadges ?? state.earnedBadges
+        );
       }
-    }
-    if (partial.bills) {
-      for (const bill of partial.bills) {
-        if (!bill._deleted) await db.saveBill(bill, authUser.id);
-      }
-    }
-    if (partial.goals) {
-      for (const goal of partial.goals) {
-        if (!goal._deleted) await db.saveGoal(goal, authUser.id);
-      }
-    }
-    if (partial.earnedBadges || partial.streak !== undefined) {
-      await db.saveStreak(
-        authUser.id,
-        partial.streak ?? state.streak,
-        partial.earnedBadges ?? state.earnedBadges
-      );
-    }
-    if (partial.user?.name) {
-      await db.saveName(authUser.id, partial.user.name);
+    } catch (e) {
+      console.error("Sync error:", e);
     }
   }, [authUser, state]);
 

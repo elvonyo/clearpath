@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-// ─── SUPABASE CLIENT ──────────────────────────────────────────────────────────
+// ─── SUPABASE CLIENT ─────────────────────────────────────────────────────────
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
   import.meta.env.VITE_SUPABASE_ANON_KEY
 );
 
-// ─── SUPABASE DATA HELPERS ────────────────────────────────────────────────────
+// ─── SUPABASE DATA HELPERS ───────────────────────────────────────────────────
 const db = {
   // Load all user data in one shot
   loadAll: async (userId) => {

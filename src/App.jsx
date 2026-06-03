@@ -1,9 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
 // ─── CONSTANTS & CONFIG ──────────────────────────────────────────────────────
-// ── OpenAI config ── swap model here if needed (gpt-4o-mini is cheaper, gpt-4o is smarter)
-const OPENAI_MODEL = "gpt-4o-mini";
-const OPENAI_API_KEY = import.meta.env?.VITE_OPENAI_API_KEY || "";
+// ── AI config — model is set in api/chat.js on the server
 
 const BADGE_DEFS = [
   { id: "first_dollar", emoji: "💰", name: "First Dollar", desc: "Set up your income" },
@@ -2056,46 +2054,18 @@ USER FINANCIAL SNAPSHOT:
     setLoading(true);
 
     try {
-     const response = await fetch("/api/chat", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    systemPrompt: `You are ClearPath, a friendly financial companion app. You help users make fast, clear financial decisions.\n\n${contextSnapshot}\n\nRules:\n- Be conversational, warm, and encouraging (never preachy)\n- Keep answers SHORT (2-4 sentences max)\n- Use dollar amounts from the user's data when relevant\n- Always end with a clear, actionable takeaway\n- Use emojis sparingly (1-2 max per response)\n- No financial jargon\n- Never say "I cannot provide financial advice" -- you CAN provide practical guidance`,
-    messages: newMessages.map(m => ({ role: m.role, content: m.content })),
-  }),
-});
+      const response = await fetch("/api/chat", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${OPENAI_API_KEY}`,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: OPENAI_MODEL,
-          max_tokens: 300,
-          messages: [
-            {
-              role: "system",
-              content: `You are ClearPath, a friendly financial companion app. You help users make fast, clear financial decisions.
-
-${contextSnapshot}
-
-Rules:
-- Be conversational, warm, and encouraging (never preachy)
-- Keep answers SHORT (2-4 sentences max unless detail is truly needed)
-- Use dollar amounts from the user's data when relevant
-- Always end with a clear, actionable takeaway
-- Use emojis sparingly (1-2 max per response)
-- No financial jargon
-- Never say "I cannot provide financial advice" -- you CAN provide practical guidance`,
-            },
-            ...newMessages.map(m => ({ role: m.role, content: m.content })),
-          ],
+          systemPrompt: `You are ClearPath, a friendly financial companion app. You help users make fast, clear financial decisions.\n\n${contextSnapshot}\n\nRules:\n- Be conversational, warm, and encouraging (never preachy)\n- Keep answers SHORT (2-4 sentences max)\n- Use dollar amounts from the user's data when relevant\n- Always end with a clear, actionable takeaway\n- Use emojis sparingly (1-2 max per response)\n- No financial jargon\n- Never say "I cannot provide financial advice" -- you CAN provide practical guidance`,
+          messages: newMessages.map(m => ({ role: m.role, content: m.content })),
         }),
       });
 
       const data = await response.json();
       if (data.error) throw new Error(data.error.message);
-      const reply = data.choices?.[0]?.message?.content || "I couldn't process that. Try rephrasing your question.";
+      const reply = data.reply || "I couldn't process that. Try rephrasing your question.";
       const updatedMessages = [...newMessages, { role: "assistant", content: reply }];
       setMessages(updatedMessages);
       onUpdate({ aiHistory: updatedMessages.slice(-20), earnedBadges: [...(state.earnedBadges || []), "ai_user"].filter((v, i, a) => a.indexOf(v) === i) });

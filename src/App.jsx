@@ -1107,23 +1107,40 @@ const AuthScreen = ({ onAuth }) => {
     setError(""); setSuccess("");
     if (!email || (!password && mode !== "forgot")) return setError("Please fill in all fields.");
     if (mode === "signup" && password.length < 6) return setError("Password must be at least 6 characters.");
+
+    // Debug: check env vars are loaded
+    const url = import.meta.env.VITE_SUPABASE_URL;
+    const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+    console.log("Supabase URL:", url);
+    console.log("Anon key starts with:", key?.slice(0, 20));
+    if (!url || !key) {
+      return setError("Config error: Supabase environment variables are missing. Check Vercel settings.");
+    }
+
     setLoading(true);
 
     try {
       if (mode === "login") {
         const { data, error: e } = await supabase.auth.signInWithPassword({ email, password });
+        console.log("Login result:", { data, error: e });
         if (e) throw e;
         onAuth(data.user);
 
       } else if (mode === "signup") {
         const { data, error: e } = await supabase.auth.signUp({ email, password });
+        console.log("Signup result:", { data, error: e });
         if (e) throw e;
         // Save name to profile
         if (data.user && name) {
           await supabase.from("profiles").upsert({ id: data.user.id, name });
         }
-        setSuccess("Account created! Check your email to confirm, then log in.");
-        setMode("login");
+        // If email confirm is off, user is logged in immediately
+        if (data.session) {
+          onAuth(data.user);
+        } else {
+          setSuccess("Account created! Check your email to confirm, then log in.");
+          setMode("login");
+        }
 
       } else if (mode === "forgot") {
         const { error: e } = await supabase.auth.resetPasswordForEmail(email, {
@@ -1134,6 +1151,7 @@ const AuthScreen = ({ onAuth }) => {
         setMode("login");
       }
     } catch (e) {
+      console.error("Auth error full:", e);
       setError(e.message || "Something went wrong. Please try again.");
     }
     setLoading(false);

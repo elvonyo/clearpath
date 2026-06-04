@@ -276,18 +276,21 @@ const injectStyles = () => {
       width: 100%;
       max-width: 430px;
       min-height: 100vh;
+      min-height: 100dvh;
       background: var(--bg);
       display: flex;
       flex-direction: column;
       position: relative;
       overflow-x: hidden;
+      margin: 0 auto;
     }
 
     .screen {
       flex: 1;
       overflow-y: auto;
-      padding-bottom: 100px;
+      padding-bottom: 80px;
       scrollbar-width: none;
+      width: 100%;
     }
     .screen::-webkit-scrollbar { display: none; }
 
@@ -317,14 +320,15 @@ const injectStyles = () => {
     .nav {
       position: fixed;
       bottom: 0;
-      left: 50%;
-      transform: translateX(-50%);
+      left: 0;
+      right: 0;
       width: 100%;
       max-width: 430px;
+      margin: 0 auto;
       background: var(--surface);
       border-top: 1px solid var(--border);
       display: flex;
-      padding: 8px 0 20px;
+      padding: 8px 0 env(safe-area-inset-bottom, 16px);
       z-index: 100;
     }
     .nav-item {
@@ -356,12 +360,14 @@ const injectStyles = () => {
       border-radius: var(--radius);
       padding: 20px;
       margin: 0 16px 12px;
+      width: calc(100% - 32px);
     }
     .card-sm {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius-sm);
       padding: 14px;
+      width: 100%;
     }
     .card-label {
       font-size: 11px;
@@ -596,7 +602,8 @@ const injectStyles = () => {
       border: 1px solid var(--border);
       border-radius: var(--radius);
       padding: 16px;
-      margin-bottom: 12px;
+      margin: 0 16px 12px;
+      width: calc(100% - 32px);
       cursor: pointer;
     }
     .goal-header {
@@ -650,11 +657,12 @@ const injectStyles = () => {
     }
     .ai-input-bar {
       position: fixed;
-      bottom: 65px;
-      left: 50%;
-      transform: translateX(-50%);
+      bottom: calc(65px + env(safe-area-inset-bottom, 0px));
+      left: 0;
+      right: 0;
       width: 100%;
       max-width: 430px;
+      margin: 0 auto;
       background: var(--bg);
       padding: 10px 16px 12px;
       display: flex;
@@ -1061,7 +1069,6 @@ const injectStyles = () => {
     @media (min-width: 431px) {
       #root { background: #050505; }
       .app-shell { box-shadow: 0 0 80px rgba(0,0,0,0.8); }
-      .fab { right: calc(50% - 215px + 20px); }
     }
   `;
   const style = document.createElement("style");
@@ -2712,14 +2719,28 @@ export default function ClearPath() {
   // ── Load user data from Supabase when logged in ──────────────────────────
   useEffect(() => {
     if (!authUser) return;
+
+    // 1. Instantly restore from localStorage cache so UI shows immediately
+    const cached = localStorage.getItem(`clearpath_${authUser.id}`);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        setState(prev => ({ ...prev, ...parsed, onboarded: true }));
+      } catch {}
+    }
+
+    // 2. Then fetch fresh from Supabase and update
     db.loadAll(authUser.id).then(data => {
+      const hasData = data.incomes.length > 0 || data.bills.length > 0 || data.goals.length > 0;
       setState(prev => ({
         ...prev,
         ...data,
         user: { ...prev.user, name: authUser.user_metadata?.name || prev.user.name },
-        onboarded: data.incomes.length > 0 || data.bills.length > 0,
+        onboarded: hasData || (cached ? true : false),
       }));
-    });
+      // Update cache with fresh data
+      localStorage.setItem(`clearpath_${authUser.id}`, JSON.stringify(data));
+    }).catch(err => console.error("Failed to load from Supabase:", err));
   }, [authUser]);
 
   const updateState = useCallback((partial) => {
@@ -2728,13 +2749,19 @@ export default function ClearPath() {
 
   // ── Wrap updateState to also sync to Supabase ────────────────────────────
   const updateAndSync = useCallback(async (partial) => {
-    setState(prev => ({ ...prev, ...partial }));
+    setState(prev => {
+      const next = { ...prev, ...partial };
+      // Keep localStorage cache in sync for instant restore on refresh
+      if (authUser) {
+        const { incomes, bills, goals, streak, earnedBadges } = next;
+        localStorage.setItem(`clearpath_${authUser.id}`, JSON.stringify({ incomes, bills, goals, streak, earnedBadges }));
+      }
+      return next;
+    });
     if (!authUser) return;
 
     try {
-      // Each screen passes _syncAction to tell us exactly what to do
       const { _syncAction, _syncItem } = partial;
-
       if (_syncAction === "saveIncome")   await db.saveIncome(_syncItem, authUser.id);
       if (_syncAction === "deleteIncome") await db.deleteIncome(_syncItem.id);
       if (_syncAction === "saveBill")     await db.saveBill(_syncItem, authUser.id);
@@ -2742,7 +2769,6 @@ export default function ClearPath() {
       if (_syncAction === "saveGoal")     await db.saveGoal(_syncItem, authUser.id);
       if (_syncAction === "deleteGoal")   await db.deleteGoal(_syncItem.id);
       if (_syncAction === "saveName")     await db.saveName(authUser.id, _syncItem);
-
       if (partial.earnedBadges || partial.streak !== undefined) {
         await db.saveStreak(
           authUser.id,
@@ -2767,6 +2793,8 @@ export default function ClearPath() {
     const newState = { ...state, user: { ...state.user, name }, incomes, bills, earnedBadges, onboarded: true };
     setState(newState);
     if (authUser) {
+      // Cache immediately
+      localStorage.setItem(`clearpath_${authUser.id}`, JSON.stringify({ incomes, bills, goals: [], streak: 0, earnedBadges }));
       await db.saveName(authUser.id, name);
       for (const inc of incomes) await db.saveIncome(inc, authUser.id);
       for (const bill of bills) await db.saveBill(bill, authUser.id);

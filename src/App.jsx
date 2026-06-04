@@ -11,33 +11,40 @@ const supabase = createClient(
 const db = {
   // Load all user data in one shot
   loadAll: async (userId) => {
-    const [incomes, bills, goals, streak, profile] = await Promise.all([
+    const since = new Date();
+    since.setDate(since.getDate() - 60);
+    const sinceStr = since.toISOString().split("T")[0];
+
+    const [incomes, bills, goals, streak, profile, expenses] = await Promise.all([
       supabase.from("income_sources").select("*").eq("user_id", userId).eq("is_active", true),
       supabase.from("bills").select("*").eq("user_id", userId).eq("is_active", true).order("due_day"),
       supabase.from("goals").select("*").eq("user_id", userId).order("created_at"),
       supabase.from("user_streaks").select("*").eq("user_id", userId).maybeSingle(),
-      supabase.from("profiles").select("name, onboarded").eq("id", userId).maybeSingle(),
+      supabase.from("profiles").select("name, onboarded, custom_categories").eq("id", userId).maybeSingle(),
+      supabase.from("expenses").select("*").eq("user_id", userId).gte("date", sinceStr).order("date", { ascending: false }).order("created_at", { ascending: false }),
     ]);
 
     if (incomes.error) console.error("incomes error:", incomes.error);
     if (bills.error)   console.error("bills error:", bills.error);
     if (goals.error)   console.error("goals error:", goals.error);
+    if (expenses.error) console.error("expenses error:", expenses.error);
 
-    // Map Supabase snake_case → React camelCase
     const mappedIncomes = (incomes.data || []).map(i => ({
       id: i.id, name: i.name, type: i.type, amount: i.amount, frequency: i.frequency,
     }));
-
     const mappedBills = (bills.data || []).map(b => ({
       id: b.id, name: b.name, category: b.category, amount: b.amount,
       dueDay: b.due_day?.toString(), recurrence: b.recurrence,
       isAutopay: b.is_autopay, active: b.is_active,
     }));
-
     const mappedGoals = (goals.data || []).map(g => ({
       id: g.id, name: g.name, emoji: g.emoji,
       targetAmount: g.target_amount, currentAmount: g.current_amount,
       perPaycheck: g.per_paycheck, completed: g.is_completed,
+    }));
+    const mappedExpenses = (expenses.data || []).map(e => ({
+      id: e.id, amount: e.amount, category: e.category,
+      note: e.note, date: e.date,
     }));
 
     return {
@@ -45,6 +52,8 @@ const db = {
         incomes: mappedIncomes,
         bills: mappedBills,
         goals: mappedGoals,
+        expenses: mappedExpenses,
+        customCategories: profile.data?.custom_categories || [],
         streak: streak.data?.savings_streak || 0,
         earnedBadges: streak.data?.earned_badges || [],
         user: { name: profile.data?.name || "" },
@@ -52,7 +61,6 @@ const db = {
       hasOnboarded: profile.data?.onboarded === true,
     };
   },
-
   // Save a single income
   saveIncome: async (income, userId) => {
     const payload = {
@@ -116,7 +124,7 @@ const db = {
     if (error) console.error("deleteGoal error:", error);
   },
 
-  // Streak & badges — always upsert (single row per user)
+  // Streak & badges — always upsert
   saveStreak: (userId, streak, badges) =>
     supabase.from("user_streaks").upsert({
       user_id: userId,
@@ -127,6 +135,49 @@ const db = {
   // Profile name
   saveName: (userId, name) =>
     supabase.from("profiles").upsert({ id: userId, name }, { onConflict: "id" }),
+
+  // Expenses
+  saveExpense: async (expense, userId) => {
+    const payload = {
+      id: expense.id || crypto.randomUUID(),
+      user_id: userId,
+      amount: parseFloat(expense.amount),
+      category: expense.category,
+      note: expense.note || "",
+      date: expense.date || new Date().toISOString().split("T")[0],
+    };
+    const { error } = await supabase.from("expenses").upsert(payload, { onConflict: "id" });
+    if (error) console.error("saveExpense error:", error);
+  },
+  deleteExpense: async (id) => {
+    const { error } = await supabase.from("expenses").delete().eq("id", id);
+    if (error) console.error("deleteExpense error:", error);
+  },
+  loadExpenses: async (userId, daysBack = 60) => {
+    const since = new Date();
+    since.setDate(since.getDate() - daysBack);
+    const { data, error } = await supabase
+      .from("expenses")
+      .select("*")
+      .eq("user_id", userId)
+      .gte("date", since.toISOString().split("T")[0])
+      .order("date", { ascending: false })
+      .order("created_at", { ascending: false });
+    if (error) console.error("loadExpenses error:", error);
+    return (data || []).map(e => ({
+      id: e.id, amount: e.amount, category: e.category,
+      note: e.note, date: e.date,
+    }));
+  },
+
+  // Custom categories
+  saveCustomCategories: async (userId, categories) => {
+    const { error } = await supabase
+      .from("profiles")
+      .update({ custom_categories: categories })
+      .eq("id", userId);
+    if (error) console.error("saveCustomCategories error:", error);
+  },
 };
 
 // ─── CONSTANTS & CONFIG ──────────────────────────────────────────────────────
@@ -251,6 +302,7 @@ const defaultState = {
   bills: [],
   goals: [],
   expenses: [],
+  customCategories: [],
   streak: 0,
   earnedBadges: [],
   aiHistory: [],
@@ -663,6 +715,129 @@ const injectStyles = () => {
     .goal-emoji { font-size: 28px; }
     .goal-name { font-size: 16px; font-weight: 600; color: var(--text); }
     .goal-meta { font-size: 12px; color: var(--text2); margin-top: 2px; }
+
+    /* SPENDING SCREEN */
+    .spend-amount-display {
+      text-align: center;
+      font-family: var(--font-mono);
+      font-size: 52px;
+      font-weight: 700;
+      color: var(--text);
+      padding: 24px 16px 8px;
+      letter-spacing: -2px;
+      min-height: 90px;
+    }
+    .spend-amount-display.has-value { color: var(--primary); }
+    .spend-amount-display .cursor {
+      display: inline-block;
+      width: 3px;
+      height: 48px;
+      background: var(--primary);
+      margin-left: 4px;
+      vertical-align: middle;
+      animation: blink 1s infinite;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+    .category-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      padding: 0 16px 12px;
+    }
+    .cat-chip {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      padding: 12px 6px;
+      background: var(--surface);
+      border: 2px solid var(--border);
+      border-radius: 14px;
+      cursor: pointer;
+      transition: all 0.15s;
+      font-family: var(--font-body);
+    }
+    .cat-chip:active { transform: scale(0.95); }
+    .cat-chip.selected {
+      border-color: var(--primary);
+      background: rgba(0,214,143,0.1);
+    }
+    .cat-chip-icon { font-size: 22px; }
+    .cat-chip-label { font-size: 10px; font-weight: 600; color: var(--text2); text-align: center; }
+    .cat-chip.selected .cat-chip-label { color: var(--primary); }
+    .numpad {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      padding: 0 16px 12px;
+    }
+    .numpad-key {
+      height: 58px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      font-size: 20px;
+      font-weight: 600;
+      color: var(--text);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-body);
+      transition: all 0.1s;
+    }
+    .numpad-key:active { transform: scale(0.96); background: var(--surface2); }
+    .numpad-key.delete { font-size: 16px; }
+    .numpad-key.add-btn {
+      background: var(--primary);
+      color: #000;
+      border-color: var(--primary);
+      font-size: 15px;
+      font-weight: 700;
+    }
+    .expense-row {
+      display: flex;
+      align-items: center;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      gap: 12px;
+    }
+    .expense-row:last-child { border-bottom: none; }
+    .expense-cat-icon {
+      width: 38px; height: 38px;
+      background: var(--surface2);
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+    .expense-info { flex: 1; min-width: 0; }
+    .expense-cat-name { font-size: 14px; font-weight: 600; color: var(--text); }
+    .expense-meta { font-size: 12px; color: var(--text2); margin-top: 2px; }
+    .expense-amount { font-size: 15px; font-weight: 700; color: var(--text); font-family: var(--font-mono); }
+    .expense-delete {
+      background: none; border: none; color: var(--text3);
+      cursor: pointer; padding: 4px 8px; font-size: 16px;
+    }
+    .day-group-header {
+      padding: 10px 16px 4px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text3);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      display: flex;
+      justify-content: space-between;
+    }
+    .today-total-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
 
     /* AI CHAT */
     .ai-screen {
@@ -1491,6 +1666,32 @@ const Onboarding = ({ onComplete }) => {
 };
 
 // ─── SNAPSHOT SCREEN ──────────────────────────────────────────────────────────
+
+
+// ─── DEFAULT CATEGORIES ──────────────────────────────────────────────────────
+const DEFAULT_CATEGORIES = [
+  { id: "food",    label: "Food",      icon: "🍔" },
+  { id: "coffee",  label: "Coffee",    icon: "☕" },
+  { id: "transport",label:"Transport", icon: "🚗" },
+  { id: "gas",     label: "Gas",       icon: "⛽" },
+  { id: "shop",    label: "Shopping",  icon: "🛍️" },
+  { id: "entertain",label:"Fun",       icon: "🎬" },
+  { id: "health",  label: "Health",    icon: "💊" },
+  { id: "home",    label: "Home",      icon: "🏠" },
+  { id: "sub",     label: "Subscript", icon: "📱" },
+  { id: "other",   label: "Other",     icon: "💡" },
+];
+
+const getCatIcon = (catId, custom = []) => {
+  const found = DEFAULT_CATEGORIES.find(c => c.id === catId) || custom.find(c => c.id === catId);
+  return found?.icon || "💡";
+};
+const getCatLabel = (catId, custom = []) => {
+  const found = DEFAULT_CATEGORIES.find(c => c.id === catId) || custom.find(c => c.id === catId);
+  return found?.label || catId;
+};
+
+
 const SnapshotScreen = ({ state, onNav }) => {
   const { incomes, bills, goals, streak, user } = state;
   const totalMonthlyIncome = incomes.reduce((s, i) => s + calcMonthlyIncome(parseFloat(i.amount) || 0, i.frequency), 0);
@@ -1573,6 +1774,56 @@ const SnapshotScreen = ({ state, onNav }) => {
           <div className="stat-label">Goals Progress</div>
         </div>
       </div>
+
+      {/* SPENDING THIS MONTH */}
+      {(() => {
+        const expenses = state.expenses || [];
+        const thisMonth = new Date().toISOString().slice(0, 7);
+        const todayStr = new Date().toISOString().split("T")[0];
+        const monthExp = expenses.filter(e => e.date?.startsWith(thisMonth));
+        const todayExp = expenses.filter(e => e.date === todayStr);
+        const monthTotal = monthExp.reduce((s, e) => s + parseFloat(e.amount), 0);
+        const todayTotal = todayExp.reduce((s, e) => s + parseFloat(e.amount), 0);
+        const catTotals = monthExp.reduce((acc, e) => {
+          acc[e.category] = (acc[e.category] || 0) + parseFloat(e.amount);
+          return acc;
+        }, {});
+        const topCat = Object.entries(catTotals).sort((a, b) => b[1] - a[1])[0];
+        return (
+          <>
+            <div className="section-header">
+              <span className="section-title">Spending This Month</span>
+              <span className="section-action" onClick={() => onNav("spend")}>+ Add</span>
+            </div>
+            <div className="card">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+                <div>
+                  <div style={{ fontSize: 28, fontWeight: 700, fontFamily: "var(--font-mono)", color: monthTotal > 0 ? "var(--danger)" : "var(--text2)" }}>
+                    ${monthTotal.toFixed(2)}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text2)", marginTop: 2 }}>tracked this month</div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "var(--font-mono)" }}>${todayTotal.toFixed(2)}</div>
+                  <div style={{ fontSize: 12, color: "var(--text2)", marginTop: 2 }}>today</div>
+                </div>
+              </div>
+              {topCat && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "var(--surface2)", borderRadius: 10 }}>
+                  <span style={{ fontSize: 18 }}>{getCatIcon(topCat[0], state.customCategories)}</span>
+                  <span style={{ fontSize: 13, color: "var(--text2)" }}>Top: <strong style={{ color: "var(--text)" }}>{getCatLabel(topCat[0], state.customCategories)}</strong></span>
+                  <span style={{ marginLeft: "auto", fontSize: 13, fontWeight: 700, fontFamily: "var(--font-mono)" }}>${topCat[1].toFixed(2)}</span>
+                </div>
+              )}
+              {monthExp.length === 0 && (
+                <div style={{ textAlign: "center", padding: "8px 0", color: "var(--text3)", fontSize: 13 }}>
+                  No spending logged yet — <span style={{ color: "var(--primary)", cursor: "pointer" }} onClick={() => onNav("spend")}>add your first entry</span>
+                </div>
+              )}
+            </div>
+          </>
+        );
+      })()}
 
       {/* UPCOMING BILLS */}
       {sortedBills.length > 0 && (
@@ -2396,23 +2647,68 @@ const AIScreen = ({ state, onUpdate }) => {
   const annualIncome = incomes.reduce((s, i) => s + calcAnnualIncome(parseFloat(i.amount) || 0, i.frequency), 0);
   const bd = calcIncomeBreakdown(annualIncome);
 
+  // ── Build spending context for AI ─────────────────────────────────────────
+  const expenses = state.expenses || [];
+  const customCategories = state.customCategories || [];
+  const now = new Date();
+  const thisMonth = now.toISOString().slice(0, 7); // "YYYY-MM"
+  const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().slice(0, 7);
+
+  const thisMonthExp = expenses.filter(e => e.date?.startsWith(thisMonth));
+  const lastMonthExp = expenses.filter(e => e.date?.startsWith(lastMonth));
+
+  const totalThisMonth = thisMonthExp.reduce((s, e) => s + parseFloat(e.amount), 0);
+  const totalLastMonth = lastMonthExp.reduce((s, e) => s + parseFloat(e.amount), 0);
+
+  // Category breakdown this month
+  const catTotals = thisMonthExp.reduce((acc, e) => {
+    const label = getCatLabel(e.category, customCategories);
+    acc[label] = (acc[label] || 0) + parseFloat(e.amount);
+    return acc;
+  }, {});
+  const topCats = Object.entries(catTotals).sort((a, b) => b[1] - a[1]).slice(0, 5);
+
+  // Today spending
+  const todayStr = now.toISOString().split("T")[0];
+  const todayTotal = expenses.filter(e => e.date === todayStr).reduce((s, e) => s + parseFloat(e.amount), 0);
+
+  // Daily average this month
+  const daysIntoMonth = now.getDate();
+  const dailyAvg = daysIntoMonth > 0 ? totalThisMonth / daysIntoMonth : 0;
+  const projectedMonthly = dailyAvg * new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+
+  const spendingTrend = totalLastMonth > 0
+    ? ((totalThisMonth - totalLastMonth) / totalLastMonth * 100).toFixed(0)
+    : null;
+
   const contextSnapshot = `
 USER FINANCIAL SNAPSHOT:
+- Name: ${state.user?.name || "User"}
 - Monthly Income: ${formatCurrency(totalMonthlyIncome)}
 - Monthly Bills: ${formatCurrency(totalMonthlyBills)}
-- Available Money: ${formatCurrency(available)}
+- Available After Bills: ${formatCurrency(available)}
 - Hourly Rate: ${bd.hourly > 0 ? formatCurrency(bd.hourly) : "Not set"}
 - Bills: ${bills.map(b => `${b.name}: ${formatCurrency(b.amount)}/mo`).join(", ") || "None"}
-- Goals: ${goals.map(g => `${g.name}: ${formatCurrency(g.currentAmount)}/${formatCurrency(g.targetAmount)}`).join(", ") || "None"}
+- Goals: ${goals.map(g => `${g.name}: ${formatCurrency(g.currentAmount || 0)}/${formatCurrency(g.targetAmount)}`).join(", ") || "None"}
+
+SPENDING DATA (${now.toLocaleString("default", { month: "long" })}):
+- Spent so far this month: ${formatCurrency(totalThisMonth)}
+- Spent last month: ${totalLastMonth > 0 ? formatCurrency(totalLastMonth) : "No data"}
+- Month-over-month change: ${spendingTrend !== null ? (spendingTrend > 0 ? `+${spendingTrend}% more spending` : `${spendingTrend}% less spending`) : "No prior data"}
+- Daily average this month: ${formatCurrency(dailyAvg)}/day
+- Projected end-of-month spending: ${formatCurrency(projectedMonthly)}
+- Spent today: ${formatCurrency(todayTotal)}
+- Top spending categories: ${topCats.map(([cat, amt]) => `${cat}: ${formatCurrency(amt)}`).join(", ") || "None logged yet"}
+- Net this month (income - bills - spending): ${formatCurrency(totalMonthlyIncome - totalMonthlyBills - totalThisMonth)}
 `;
 
   const SUGGESTED_QUESTIONS = [
+    "Give me a full breakdown of my spending this month",
+    "Am I on track with my budget?",
+    "What are my biggest spending categories?",
+    "How does this month compare to last month?",
     "Can I afford a $500 purchase?",
-    "How should I prioritize my bills?",
-    "What if I save $100 more per month?",
-    "How much is my daily coffee habit costing me per year?",
-    "Am I saving enough?",
-    "How long until I have a $1,000 emergency fund?",
+    "How long until I hit my savings goals?",
   ];
 
   const sendMessage = async (text) => {
@@ -2429,7 +2725,7 @@ USER FINANCIAL SNAPSHOT:
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          systemPrompt: `You are ClearPath, a friendly financial companion app. You help users make fast, clear financial decisions.\n\n${contextSnapshot}\n\nRules:\n- Be conversational, warm, and encouraging (never preachy)\n- Keep answers SHORT (2-4 sentences max)\n- Use dollar amounts from the user's data when relevant\n- Always end with a clear, actionable takeaway\n- Use emojis sparingly (1-2 max per response)\n- No financial jargon\n- Never say "I cannot provide financial advice" -- you CAN provide practical guidance`,
+          systemPrompt: `You are ClearPath, a smart and friendly financial companion. You have full access to the user's real income, bills, goals, and daily spending data below. Use it to give specific, data-driven insights.\n\n${contextSnapshot}\n\nRules:\n- Be conversational, warm, direct -- never preachy\n- Use the user's ACTUAL numbers in every response\n- For spending trends: reference specific categories and amounts\n- For monthly breakdowns: list the top categories with amounts\n- Keep answers focused (3-5 sentences for simple questions, more for breakdowns)\n- Always end with one clear, actionable takeaway\n- Use emojis sparingly (1-2 max)\n- No financial jargon\n- You CAN give practical financial guidance -- never refuse`,
           messages: newMessages.map(m => ({ role: m.role, content: m.content })),
         }),
       });
@@ -2737,6 +3033,220 @@ const SettingsScreen = ({ state, onUpdate, onThemeToggle, onFullReset, onSignOut
   );
 };
 
+// ─── SPENDING SCREEN ──────────────────────────────────────────────────────────
+const SpendingScreen = ({ state, onUpdate, authUser }) => {
+  const { expenses = [], customCategories = [] } = state;
+  const allCats = [...DEFAULT_CATEGORIES, ...customCategories];
+  const [amount, setAmount] = useState("");
+  const [selCat, setSelCat] = useState(null);
+  const [note, setNote] = useState("");
+  const [showNewCat, setShowNewCat] = useState(false);
+  const [newCatLabel, setNewCatLabel] = useState("");
+  const [newCatIcon, setNewCatIcon] = useState("✨");
+  const [tab, setTab] = useState("add"); // "add" | "history"
+
+  // Today's date string
+  const today = new Date().toISOString().split("T")[0];
+  const todayTotal = expenses.filter(e => e.date === today).reduce((s, e) => s + parseFloat(e.amount), 0);
+
+  // Group expenses by date
+  const grouped = expenses.reduce((acc, e) => {
+    if (!acc[e.date]) acc[e.date] = [];
+    acc[e.date].push(e);
+    return acc;
+  }, {});
+  const sortedDates = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
+
+  const handleNum = (k) => {
+    if (k === "." && amount.includes(".")) return;
+    if (k === "." && amount === "") { setAmount("0."); return; }
+    // Limit to 2 decimal places
+    if (amount.includes(".") && amount.split(".")[1]?.length >= 2) return;
+    if (amount.length >= 8) return;
+    setAmount(prev => prev + k);
+  };
+  const handleDel = () => setAmount(prev => prev.slice(0, -1));
+
+  const handleAdd = async () => {
+    const amt = parseFloat(amount);
+    if (!amt || amt <= 0 || !selCat) return;
+    const expense = {
+      id: crypto.randomUUID(),
+      amount: amt,
+      category: selCat,
+      note: note.trim(),
+      date: today,
+    };
+    const newExpenses = [expense, ...expenses];
+    onUpdate({ expenses: newExpenses, _syncAction: "saveExpense", _syncItem: expense });
+    setAmount("");
+    setSelCat(null);
+    setNote("");
+  };
+
+  const handleDelete = (id) => {
+    onUpdate({ expenses: expenses.filter(e => e.id !== id), _syncAction: "deleteExpense", _syncItem: { id } });
+  };
+
+  const handleCreateCat = async () => {
+    if (!newCatLabel.trim()) return;
+    const newCat = { id: Date.now().toString(), label: newCatLabel.trim(), icon: newCatIcon };
+    const updated = [...customCategories, newCat];
+    onUpdate({ customCategories: updated, _syncAction: "saveCustomCategories", _syncItem: updated });
+    setSelCat(newCat.id);
+    setShowNewCat(false);
+    setNewCatLabel("");
+    setNewCatIcon("✨");
+  };
+
+  const formatDate = (dateStr) => {
+    const d = new Date(dateStr + "T12:00:00");
+    const now = new Date();
+    const diff = Math.floor((now - d) / 86400000);
+    if (diff === 0) return "Today";
+    if (diff === 1) return "Yesterday";
+    return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  };
+
+  return (
+    <div className="screen" style={{ paddingBottom: 80 }}>
+      <div className="header">
+        <div>
+          <div className="header-title">Daily Spending 💸</div>
+          <div className="header-subtitle">Track what you spend today</div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={() => setTab("add")} className="btn btn-sm" style={{ background: tab==="add" ? "var(--primary)" : "var(--surface)", color: tab==="add" ? "#000" : "var(--text)", border: "1px solid var(--border)", borderRadius: 20, padding: "6px 14px", fontSize: 13 }}>Add</button>
+          <button onClick={() => setTab("history")} className="btn btn-sm" style={{ background: tab==="history" ? "var(--primary)" : "var(--surface)", color: tab==="history" ? "#000" : "var(--text)", border: "1px solid var(--border)", borderRadius: 20, padding: "6px 14px", fontSize: 13 }}>History</button>
+        </div>
+      </div>
+
+      {/* Today summary strip */}
+      <div className="today-total-bar">
+        <div style={{ fontSize: 13, color: "var(--text2)" }}>Spent today</div>
+        <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "var(--font-mono)", color: todayTotal > 0 ? "var(--danger)" : "var(--text2)" }}>
+          {todayTotal > 0 ? `-$${todayTotal.toFixed(2)}` : "$0.00"}
+        </div>
+      </div>
+
+      {tab === "add" ? (
+        <>
+          {/* Amount display */}
+          <div className={`spend-amount-display ${amount ? "has-value" : ""}`}>
+            {amount ? `$${amount}` : "$0"}
+            <span className="cursor" />
+          </div>
+
+          {/* Note field */}
+          <div style={{ padding: "0 16px 10px" }}>
+            <input
+              className="input"
+              placeholder="Add a note (optional)"
+              value={note}
+              onChange={e => setNote(e.target.value)}
+              style={{ fontSize: 14, padding: "10px 14px" }}
+            />
+          </div>
+
+          {/* Category grid */}
+          <div style={{ padding: "0 16px 6px" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text3)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Category</div>
+          </div>
+          <div className="category-grid">
+            {allCats.map(cat => (
+              <button key={cat.id} className={`cat-chip ${selCat === cat.id ? "selected" : ""}`} onClick={() => setSelCat(cat.id)}>
+                <span className="cat-chip-icon">{cat.icon}</span>
+                <span className="cat-chip-label">{cat.label}</span>
+              </button>
+            ))}
+            <button className="cat-chip" onClick={() => setShowNewCat(true)} style={{ borderStyle: "dashed" }}>
+              <span className="cat-chip-icon">+</span>
+              <span className="cat-chip-label">New</span>
+            </button>
+          </div>
+
+          {/* Numpad */}
+          <div className="numpad">
+            {["1","2","3","4","5","6","7","8","9",".","0"].map(k => (
+              <button key={k} className="numpad-key" onClick={() => handleNum(k)}>{k}</button>
+            ))}
+            <button className="numpad-key delete" onClick={handleDel}>⌫</button>
+          </div>
+
+          {/* Add button */}
+          <div style={{ padding: "0 16px 16px" }}>
+            <button
+              onClick={handleAdd}
+              disabled={!amount || parseFloat(amount) <= 0 || !selCat}
+              style={{
+                width: "100%", padding: "16px", borderRadius: 16, border: "none",
+                background: (!amount || parseFloat(amount) <= 0 || !selCat) ? "var(--surface)" : "var(--primary)",
+                color: (!amount || parseFloat(amount) <= 0 || !selCat) ? "var(--text3)" : "#000",
+                fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: "var(--font-body)",
+                transition: "all 0.15s",
+              }}>
+              {!selCat ? "Select a category" : !amount || parseFloat(amount) <= 0 ? "Enter an amount" : `Add $${parseFloat(amount).toFixed(2)} → ${getCatLabel(selCat, customCategories)}`}
+            </button>
+          </div>
+
+          {/* New category modal */}
+          {showNewCat && (
+            <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 200 }}>
+              <div style={{ background: "var(--surface)", borderRadius: "20px 20px 0 0", padding: 24, width: "100%", maxWidth: 430 }}>
+                <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 16 }}>Create Category</div>
+                <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+                  <input className="input" placeholder="Emoji icon" value={newCatIcon} onChange={e => setNewCatIcon(e.target.value)} style={{ width: 70, textAlign: "center", fontSize: 22 }} maxLength={2} />
+                  <input className="input" placeholder="Category name" value={newCatLabel} onChange={e => setNewCatLabel(e.target.value)} style={{ flex: 1 }} autoFocus />
+                </div>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setShowNewCat(false)}>Cancel</button>
+                  <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleCreateCat} disabled={!newCatLabel.trim()}>Create</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        /* History tab */
+        <div>
+          {sortedDates.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "48px 24px", color: "var(--text2)" }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>💸</div>
+              <div style={{ fontSize: 16, fontWeight: 600 }}>No spending logged yet</div>
+              <div style={{ fontSize: 13, marginTop: 6 }}>Tap Add to record your first expense</div>
+            </div>
+          ) : (
+            sortedDates.map(date => {
+              const dayTotal = grouped[date].reduce((s, e) => s + parseFloat(e.amount), 0);
+              return (
+                <div key={date}>
+                  <div className="day-group-header">
+                    <span>{formatDate(date)}</span>
+                    <span style={{ color: "var(--danger)", fontFamily: "var(--font-mono)" }}>-${dayTotal.toFixed(2)}</span>
+                  </div>
+                  <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+                    {grouped[date].map(e => (
+                      <div key={e.id} className="expense-row">
+                        <div className="expense-cat-icon">{getCatIcon(e.category, customCategories)}</div>
+                        <div className="expense-info">
+                          <div className="expense-cat-name">{getCatLabel(e.category, customCategories)}</div>
+                          {e.note && <div className="expense-meta">{e.note}</div>}
+                        </div>
+                        <div className="expense-amount">${parseFloat(e.amount).toFixed(2)}</div>
+                        <button className="expense-delete" onClick={() => handleDelete(e.id)}>✕</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function ClearPath() {
   const [authUser, setAuthUser] = useState(null);       // Supabase user object
@@ -2805,9 +3315,12 @@ export default function ClearPath() {
       if (_syncAction === "deleteIncome") await db.deleteIncome(_syncItem.id);
       if (_syncAction === "saveBill")     await db.saveBill(_syncItem, authUser.id);
       if (_syncAction === "deleteBill")   await db.deleteBill(_syncItem.id);
-      if (_syncAction === "saveGoal")     await db.saveGoal(_syncItem, authUser.id);
-      if (_syncAction === "deleteGoal")   await db.deleteGoal(_syncItem.id);
-      if (_syncAction === "saveName")     await db.saveName(authUser.id, _syncItem);
+      if (_syncAction === "saveGoal")          await db.saveGoal(_syncItem, authUser.id);
+      if (_syncAction === "deleteGoal")        await db.deleteGoal(_syncItem.id);
+      if (_syncAction === "saveName")          await db.saveName(authUser.id, _syncItem);
+      if (_syncAction === "saveExpense")       await db.saveExpense(_syncItem, authUser.id);
+      if (_syncAction === "deleteExpense")     await db.deleteExpense(_syncItem.id);
+      if (_syncAction === "saveCustomCategories") await db.saveCustomCategories(authUser.id, _syncItem);
       if (partial.earnedBadges || partial.streak !== undefined) {
         await db.saveStreak(
           authUser.id,
@@ -2919,17 +3432,18 @@ export default function ClearPath() {
   }
 
   const NAV = [
-    { id: "home", icon: "🏠", label: "Home" },
-    { id: "afford", icon: "🤔", label: "Afford?" },
-    { id: "bills", icon: "📋", label: "Bills" },
-    { id: "goals", icon: "🎯", label: "Goals" },
-    { id: "ai", icon: "🤖", label: "Ask AI" },
+    { id: "home",    icon: "🏠", label: "Home" },
+    { id: "spend",   icon: "💸", label: "Spend" },
+    { id: "bills",   icon: "📋", label: "Bills" },
+    { id: "goals",   icon: "🎯", label: "Goals" },
+    { id: "ai",      icon: "🤖", label: "Ask AI" },
   ];
 
   const renderScreen = () => {
     switch (tab) {
       case "home":     return <SnapshotScreen state={state} onNav={setTab} />;
       case "afford":   return <AffordScreen state={state} />;
+      case "spend":    return <SpendingScreen state={state} onUpdate={updateAndSync} authUser={authUser} />;
       case "income":   return <IncomeScreen state={state} onUpdate={updateAndSync} />;
       case "bills":    return <BillsScreen state={state} onUpdate={updateAndSync} />;
       case "goals":    return <GoalsScreen state={state} onUpdate={updateAndSync} />;

@@ -11,53 +11,97 @@ const supabase = createClient(
 const db = {
   // Load all user data in one shot
   loadAll: async (userId) => {
-    const [incomes, bills, goals, streak] = await Promise.all([
+    const [incomes, bills, goals, streak, profile] = await Promise.all([
       supabase.from("income_sources").select("*").eq("user_id", userId).eq("is_active", true),
       supabase.from("bills").select("*").eq("user_id", userId).eq("is_active", true).order("due_day"),
       supabase.from("goals").select("*").eq("user_id", userId).order("created_at"),
       supabase.from("user_streaks").select("*").eq("user_id", userId).single(),
+      supabase.from("profiles").select("name, created_at").eq("id", userId).single(),
     ]);
+
+    // Log any errors
+    if (incomes.error) console.error("incomes error:", incomes.error);
+    if (bills.error)   console.error("bills error:", bills.error);
+    if (goals.error)   console.error("goals error:", goals.error);
+    if (streak.error)  console.error("streak error:", streak.error);
+    if (profile.error) console.error("profile error:", profile.error);
+
     return {
-      incomes: incomes.data || [],
-      bills: bills.data || [],
-      goals: goals.data || [],
-      streak: streak.data?.savings_streak || 0,
-      earnedBadges: streak.data?.earned_badges || [],
+      data: {
+        incomes: incomes.data || [],
+        bills: bills.data || [],
+        goals: goals.data || [],
+        streak: streak.data?.savings_streak || 0,
+        earnedBadges: streak.data?.earned_badges || [],
+        user: { name: profile.data?.name || "" },
+      },
+      // User is onboarded if their profile row exists (created on signup)
+      hasProfile: !!profile.data,
     };
   },
 
-  // Save a single income (insert or update by id)
+  // Save a single income
   saveIncome: async (income, userId) => {
-    const { id, ...fields } = income;
-    if (id) {
-      return supabase.from("income_sources").update({ ...fields, user_id: userId }).eq("id", id);
-    }
-    return supabase.from("income_sources").insert({ id: crypto.randomUUID(), ...fields, user_id: userId });
+    const payload = {
+      id: income.id || crypto.randomUUID(),
+      name: income.name,
+      type: income.type || "salary",
+      amount: parseFloat(income.amount),
+      frequency: income.frequency,
+      is_active: true,
+      user_id: userId,
+    };
+    console.log("saveIncome payload:", payload);
+    const { error } = await supabase.from("income_sources").upsert(payload, { onConflict: "id" });
+    if (error) console.error("saveIncome error:", error);
   },
-  deleteIncome: (id) =>
-    supabase.from("income_sources").delete().eq("id", id),
+  deleteIncome: async (id) => {
+    const { error } = await supabase.from("income_sources").delete().eq("id", id);
+    if (error) console.error("deleteIncome error:", error);
+  },
 
   // Save a single bill
   saveBill: async (bill, userId) => {
-    const { id, ...fields } = bill;
-    if (id) {
-      return supabase.from("bills").update({ ...fields, user_id: userId }).eq("id", id);
-    }
-    return supabase.from("bills").insert({ id: crypto.randomUUID(), ...fields, user_id: userId });
+    const payload = {
+      id: bill.id || crypto.randomUUID(),
+      name: bill.name,
+      category: bill.category || "other",
+      amount: parseFloat(bill.amount),
+      due_day: parseInt(bill.dueDay || bill.due_day) || 1,
+      recurrence: bill.recurrence || "monthly",
+      is_autopay: bill.isAutopay || false,
+      is_active: true,
+      user_id: userId,
+    };
+    console.log("saveBill payload:", payload);
+    const { error } = await supabase.from("bills").upsert(payload, { onConflict: "id" });
+    if (error) console.error("saveBill error:", error);
   },
-  deleteBill: (id) =>
-    supabase.from("bills").delete().eq("id", id),
+  deleteBill: async (id) => {
+    const { error } = await supabase.from("bills").delete().eq("id", id);
+    if (error) console.error("deleteBill error:", error);
+  },
 
   // Save a single goal
   saveGoal: async (goal, userId) => {
-    const { id, ...fields } = goal;
-    if (id) {
-      return supabase.from("goals").update({ ...fields, user_id: userId }).eq("id", id);
-    }
-    return supabase.from("goals").insert({ id: crypto.randomUUID(), ...fields, user_id: userId });
+    const payload = {
+      id: goal.id || crypto.randomUUID(),
+      name: goal.name,
+      emoji: goal.emoji || "🎯",
+      target_amount: parseFloat(goal.targetAmount),
+      current_amount: parseFloat(goal.currentAmount) || 0,
+      per_paycheck: parseFloat(goal.perPaycheck) || 0,
+      is_completed: goal.completed || false,
+      user_id: userId,
+    };
+    console.log("saveGoal payload:", payload);
+    const { error } = await supabase.from("goals").upsert(payload, { onConflict: "id" });
+    if (error) console.error("saveGoal error:", error);
   },
-  deleteGoal: (id) =>
-    supabase.from("goals").delete().eq("id", id),
+  deleteGoal: async (id) => {
+    const { error } = await supabase.from("goals").delete().eq("id", id);
+    if (error) console.error("deleteGoal error:", error);
+  },
 
   // Streak & badges — always upsert (single row per user)
   saveStreak: (userId, streak, badges) =>
@@ -2706,29 +2750,24 @@ export default function ClearPath() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // ── Load user data — Supabase only, no localStorage ─────────────────────
+  // ── Load user data — Supabase only ───────────────────────────────────────
   useEffect(() => {
     if (!authUser) return;
 
-    // Wipe any stale localStorage data from old versions
+    // Wipe any stale localStorage
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem(`clearpath_${authUser.id}`);
 
-    // Show loading state while fetching
-    setState(prev => ({ ...prev, onboarded: false }));
-
-    db.loadAll(authUser.id).then(data => {
+    db.loadAll(authUser.id).then(({ data, hasProfile }) => {
       console.log("Supabase loadAll result:", JSON.stringify(data));
-      const hasData = data.incomes.length > 0 || data.bills.length > 0 || data.goals.length > 0;
       setState(prev => ({
         ...prev,
         ...data,
-        user: { ...prev.user, name: authUser.user_metadata?.name || prev.user.name },
-        onboarded: hasData,
+        user: { ...prev.user, name: data.user?.name || authUser.user_metadata?.name || prev.user.name },
+        onboarded: hasProfile,
       }));
     }).catch(err => {
       console.error("Supabase loadAll FAILED:", err);
-      setState(prev => ({ ...prev, onboarded: false }));
     });
   }, [authUser]);
 
@@ -2770,12 +2809,19 @@ export default function ClearPath() {
   }, []);
 
   const completeOnboarding = useCallback(async ({ name, incomes, bills, earnedBadges }) => {
+    // Set onboarded immediately so we don't flash back to onboarding
     setState(prev => ({ ...prev, user: { ...prev.user, name }, incomes, bills, earnedBadges, onboarded: true }));
     if (authUser) {
-      await db.saveName(authUser.id, name);
-      for (const inc of incomes) await db.saveIncome(inc, authUser.id);
-      for (const bill of bills) await db.saveBill(bill, authUser.id);
-      await db.saveStreak(authUser.id, 0, earnedBadges);
+      try {
+        // Save name to profile — upsert in case trigger already created the row
+        const { error: nameErr } = await supabase.from("profiles").upsert({ id: authUser.id, name }, { onConflict: "id" });
+        if (nameErr) console.error("saveName error:", nameErr);
+        for (const inc of incomes) await db.saveIncome(inc, authUser.id);
+        for (const bill of bills) await db.saveBill(bill, authUser.id);
+        await db.saveStreak(authUser.id, 0, earnedBadges);
+      } catch (e) {
+        console.error("completeOnboarding error:", e);
+      }
     }
   }, [authUser]);
 

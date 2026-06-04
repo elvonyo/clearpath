@@ -16,25 +16,40 @@ const db = {
       supabase.from("bills").select("*").eq("user_id", userId).eq("is_active", true).order("due_day"),
       supabase.from("goals").select("*").eq("user_id", userId).order("created_at"),
       supabase.from("user_streaks").select("*").eq("user_id", userId).maybeSingle(),
-      supabase.from("profiles").select("name, created_at").eq("id", userId).maybeSingle(),
+      supabase.from("profiles").select("name, onboarded").eq("id", userId).maybeSingle(),
     ]);
 
     if (incomes.error) console.error("incomes error:", incomes.error);
     if (bills.error)   console.error("bills error:", bills.error);
     if (goals.error)   console.error("goals error:", goals.error);
-    if (streak.error)  console.error("streak error:", streak.error);
-    if (profile.error) console.error("profile error:", profile.error);
+
+    // Map Supabase snake_case → React camelCase
+    const mappedIncomes = (incomes.data || []).map(i => ({
+      id: i.id, name: i.name, type: i.type, amount: i.amount, frequency: i.frequency,
+    }));
+
+    const mappedBills = (bills.data || []).map(b => ({
+      id: b.id, name: b.name, category: b.category, amount: b.amount,
+      dueDay: b.due_day?.toString(), recurrence: b.recurrence,
+      isAutopay: b.is_autopay, active: b.is_active,
+    }));
+
+    const mappedGoals = (goals.data || []).map(g => ({
+      id: g.id, name: g.name, emoji: g.emoji,
+      targetAmount: g.target_amount, currentAmount: g.current_amount,
+      perPaycheck: g.per_paycheck, completed: g.is_completed,
+    }));
 
     return {
       data: {
-        incomes: incomes.data || [],
-        bills: bills.data || [],
-        goals: goals.data || [],
+        incomes: mappedIncomes,
+        bills: mappedBills,
+        goals: mappedGoals,
         streak: streak.data?.savings_streak || 0,
         earnedBadges: streak.data?.earned_badges || [],
         user: { name: profile.data?.name || "" },
       },
-      hasProfile: !!profile.data,
+      hasOnboarded: profile.data?.onboarded === true,
     };
   },
 
@@ -1316,13 +1331,13 @@ const Onboarding = ({ onComplete }) => {
 
   const addBill = () => {
     if (!newBill.name || !newBill.amount) return;
-    setBills(prev => [...prev, { ...newBill, id: Date.now().toString(), active: true }]);
+    setBills(prev => [...prev, { ...newBill, id: crypto.randomUUID(), active: true }]);
     setNewBill({ name: "", amount: "", category: "housing", recurrence: "monthly", dueDay: "1" });
     setShowBillForm(false);
   };
 
   const finish = () => {
-    const income = { id: "1", name: "Primary Income", amount: parseFloat(incomeAmount) || 0, frequency: incomeFreq, type: "salary" };
+    const income = { id: crypto.randomUUID(), name: "Primary Income", amount: parseFloat(incomeAmount) || 0, frequency: incomeFreq, type: "salary" };
     onComplete({ name, incomes: [income], bills, earnedBadges: ["first_dollar"] });
   };
 
@@ -2763,13 +2778,13 @@ export default function ClearPath() {
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem(`clearpath_${authUser.id}`);
 
-    db.loadAll(authUser.id).then(({ data, hasProfile }) => {
-      console.log("Supabase loadAll result:", JSON.stringify(data));
+    db.loadAll(authUser.id).then(({ data, hasOnboarded }) => {
+      console.log("Supabase loadAll result:", JSON.stringify(data), "onboarded:", hasOnboarded);
       setState(prev => ({
         ...prev,
         ...data,
         user: { ...prev.user, name: data.user?.name || authUser.user_metadata?.name || prev.user.name },
-        onboarded: hasProfile,
+        onboarded: hasOnboarded,
       }));
     }).catch(err => {
       console.error("Supabase loadAll FAILED:", err);
@@ -2814,19 +2829,37 @@ export default function ClearPath() {
   }, []);
 
   const completeOnboarding = useCallback(async ({ name, incomes, bills, earnedBadges }) => {
-    // Set onboarded immediately so we don't flash back to onboarding
+    // Immediately show home screen
     setState(prev => ({ ...prev, user: { ...prev.user, name }, incomes, bills, earnedBadges, onboarded: true }));
-    if (authUser) {
-      try {
-        // Save name to profile — upsert in case trigger already created the row
-        const { error: nameErr } = await supabase.from("profiles").upsert({ id: authUser.id, name }, { onConflict: "id" });
-        if (nameErr) console.error("saveName error:", nameErr);
-        for (const inc of incomes) await db.saveIncome(inc, authUser.id);
-        for (const bill of bills) await db.saveBill(bill, authUser.id);
-        await db.saveStreak(authUser.id, 0, earnedBadges);
-      } catch (e) {
-        console.error("completeOnboarding error:", e);
+
+    if (!authUser) return;
+
+    try {
+      // 1. Mark profile as onboarded and save name
+      const { error: profileErr } = await supabase.from("profiles").upsert(
+        { id: authUser.id, name, onboarded: true },
+        { onConflict: "id" }
+      );
+      if (profileErr) console.error("Profile save error:", profileErr);
+
+      // 2. Save each income
+      for (const inc of incomes) {
+        console.log("Saving income:", inc);
+        await db.saveIncome(inc, authUser.id);
       }
+
+      // 3. Save each bill
+      for (const bill of bills) {
+        console.log("Saving bill:", bill);
+        await db.saveBill(bill, authUser.id);
+      }
+
+      // 4. Save badges
+      await db.saveStreak(authUser.id, 0, earnedBadges);
+
+      console.log("Onboarding complete — all data saved to Supabase");
+    } catch (e) {
+      console.error("completeOnboarding error:", e);
     }
   }, [authUser]);
 
@@ -2846,6 +2879,7 @@ export default function ClearPath() {
         supabase.from("bills").delete().eq("user_id", authUser.id),
         supabase.from("goals").delete().eq("user_id", authUser.id),
         supabase.from("user_streaks").delete().eq("user_id", authUser.id),
+        supabase.from("profiles").update({ onboarded: false, name: "" }).eq("id", authUser.id),
       ]);
     }
     setState({ ...defaultState });

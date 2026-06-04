@@ -185,7 +185,8 @@ const calcAffordability = (amount, monthlyIncome, monthlyBills, goals, incomeBre
   return { canAfford, stretch: !canAfford && amount <= available * 1.3, workHours, workDays, remainingAfter, savingsImpact };
 };
 
-// ─── STORAGE ──────────────────────────────────────────────────────────────────
+// ─── STORAGE ─────────────────────────────────────────────────────────────────
+// All data lives in Supabase — localStorage is cleared on load to prevent stale data
 const STORAGE_KEY = "clearpath_v1";
 const defaultState = {
   user: { name: "", theme: "dark" },
@@ -197,17 +198,6 @@ const defaultState = {
   earnedBadges: [],
   aiHistory: [],
   onboarded: false,
-};
-
-const loadState = () => {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? { ...defaultState, ...JSON.parse(raw) } : defaultState;
-  } catch { return defaultState; }
-};
-
-const saveState = (state) => {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
 };
 
 // ─── STYLES ──────────────────────────────────────────────────────────────────
@@ -2716,31 +2706,30 @@ export default function ClearPath() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // ── Load user data from Supabase when logged in ──────────────────────────
+  // ── Load user data — Supabase only, no localStorage ─────────────────────
   useEffect(() => {
     if (!authUser) return;
 
-    // 1. Instantly restore from localStorage cache so UI shows immediately
-    const cached = localStorage.getItem(`clearpath_${authUser.id}`);
-    if (cached) {
-      try {
-        const parsed = JSON.parse(cached);
-        setState(prev => ({ ...prev, ...parsed, onboarded: true }));
-      } catch {}
-    }
+    // Wipe any stale localStorage data from old versions
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(`clearpath_${authUser.id}`);
 
-    // 2. Then fetch fresh from Supabase and update
+    // Show loading state while fetching
+    setState(prev => ({ ...prev, onboarded: false }));
+
     db.loadAll(authUser.id).then(data => {
+      console.log("Supabase loadAll result:", JSON.stringify(data));
       const hasData = data.incomes.length > 0 || data.bills.length > 0 || data.goals.length > 0;
       setState(prev => ({
         ...prev,
         ...data,
         user: { ...prev.user, name: authUser.user_metadata?.name || prev.user.name },
-        onboarded: hasData || (cached ? true : false),
+        onboarded: hasData,
       }));
-      // Update cache with fresh data
-      localStorage.setItem(`clearpath_${authUser.id}`, JSON.stringify(data));
-    }).catch(err => console.error("Failed to load from Supabase:", err));
+    }).catch(err => {
+      console.error("Supabase loadAll FAILED:", err);
+      setState(prev => ({ ...prev, onboarded: false }));
+    });
   }, [authUser]);
 
   const updateState = useCallback((partial) => {
@@ -2749,17 +2738,8 @@ export default function ClearPath() {
 
   // ── Wrap updateState to also sync to Supabase ────────────────────────────
   const updateAndSync = useCallback(async (partial) => {
-    setState(prev => {
-      const next = { ...prev, ...partial };
-      // Keep localStorage cache in sync for instant restore on refresh
-      if (authUser) {
-        const { incomes, bills, goals, streak, earnedBadges } = next;
-        localStorage.setItem(`clearpath_${authUser.id}`, JSON.stringify({ incomes, bills, goals, streak, earnedBadges }));
-      }
-      return next;
-    });
+    setState(prev => ({ ...prev, ...partial }));
     if (!authUser) return;
-
     try {
       const { _syncAction, _syncItem } = partial;
       if (_syncAction === "saveIncome")   await db.saveIncome(_syncItem, authUser.id);
@@ -2790,28 +2770,26 @@ export default function ClearPath() {
   }, []);
 
   const completeOnboarding = useCallback(async ({ name, incomes, bills, earnedBadges }) => {
-    const newState = { ...state, user: { ...state.user, name }, incomes, bills, earnedBadges, onboarded: true };
-    setState(newState);
+    setState(prev => ({ ...prev, user: { ...prev.user, name }, incomes, bills, earnedBadges, onboarded: true }));
     if (authUser) {
-      // Cache immediately
-      localStorage.setItem(`clearpath_${authUser.id}`, JSON.stringify({ incomes, bills, goals: [], streak: 0, earnedBadges }));
       await db.saveName(authUser.id, name);
       for (const inc of incomes) await db.saveIncome(inc, authUser.id);
       for (const bill of bills) await db.saveBill(bill, authUser.id);
       await db.saveStreak(authUser.id, 0, earnedBadges);
     }
-  }, [authUser, state]);
+  }, [authUser]);
 
   const handleSignOut = useCallback(async () => {
+    localStorage.clear();
     await supabase.auth.signOut();
-    setState(defaultState);
+    setState({ ...defaultState });
     setTab("home");
     setAuthUser(null);
   }, []);
 
   const fullReset = useCallback(async () => {
+    localStorage.clear();
     if (authUser) {
-      // Delete all user data from Supabase
       await Promise.all([
         supabase.from("income_sources").delete().eq("user_id", authUser.id),
         supabase.from("bills").delete().eq("user_id", authUser.id),

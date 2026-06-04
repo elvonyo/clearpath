@@ -15,11 +15,10 @@ const db = {
       supabase.from("income_sources").select("*").eq("user_id", userId).eq("is_active", true),
       supabase.from("bills").select("*").eq("user_id", userId).eq("is_active", true).order("due_day"),
       supabase.from("goals").select("*").eq("user_id", userId).order("created_at"),
-      supabase.from("user_streaks").select("*").eq("user_id", userId).single(),
-      supabase.from("profiles").select("name, created_at").eq("id", userId).single(),
+      supabase.from("user_streaks").select("*").eq("user_id", userId).maybeSingle(),
+      supabase.from("profiles").select("name, created_at").eq("id", userId).maybeSingle(),
     ]);
 
-    // Log any errors
     if (incomes.error) console.error("incomes error:", incomes.error);
     if (bills.error)   console.error("bills error:", bills.error);
     if (goals.error)   console.error("goals error:", goals.error);
@@ -35,7 +34,6 @@ const db = {
         earnedBadges: streak.data?.earned_badges || [],
         user: { name: profile.data?.name || "" },
       },
-      // User is onboarded if their profile row exists (created on signup)
       hasProfile: !!profile.data,
     };
   },
@@ -2736,14 +2734,21 @@ export default function ClearPath() {
 
   // ── Check for existing session on mount ──────────────────────────────────
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
-        setAuthUser(session.user);
+    // getUser() hits the Supabase server — if user was deleted, it returns null
+    // getSession() only checks local cache — that's why deleted users stay logged in
+    supabase.auth.getUser().then(({ data: { user }, error }) => {
+      if (error || !user) {
+        // Invalid or deleted user — clear everything and force logout
+        localStorage.clear();
+        sessionStorage.clear();
+        supabase.auth.signOut();
+        setAuthUser(null);
+      } else {
+        setAuthUser(user);
       }
       setAuthLoading(false);
     });
 
-    // Listen for login/logout events
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setAuthUser(session?.user ?? null);
     });

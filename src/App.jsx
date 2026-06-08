@@ -284,7 +284,7 @@ const calcGoalForecast = (goal, monthlySavingsAvailable) => {
 };
 
 const calcAffordability = (amount, monthlyIncome, monthlyBills, goals, incomeBreakdown) => {
-  const available = Math.max(0, monthlyIncome - monthlyBills);
+  const available = Math.max(0, monthlyIncome - monthlyBills);  // monthlyIncome is already spending-adjusted when passed in
   const canAfford = amount <= available;
   const workHours = incomeBreakdown.hourly > 0 ? amount / incomeBreakdown.hourly : 0;
   const workDays = incomeBreakdown.daily > 0 ? amount / incomeBreakdown.daily : 0;
@@ -1693,11 +1693,13 @@ const getCatLabel = (catId, custom = []) => {
 
 
 const SnapshotScreen = ({ state, onNav }) => {
-  const { incomes, bills, goals, streak, user } = state;
+  const { incomes, bills, goals, streak, user, expenses = [], customCategories = [] } = state;
   const totalMonthlyIncome = incomes.reduce((s, i) => s + calcMonthlyIncome(parseFloat(i.amount) || 0, i.frequency), 0);
   const totalMonthlyBills = calcMonthlyBills(bills);
-  const available = totalMonthlyIncome - totalMonthlyBills;
-  const savingsRate = totalMonthlyIncome > 0 ? (available / totalMonthlyIncome) : 0;
+  const thisMonth = new Date().toISOString().slice(0, 7);
+  const totalSpentThisMonth = expenses.filter(e => e.date?.startsWith(thisMonth)).reduce((s, e) => s + parseFloat(e.amount || 0), 0);
+  const available = totalMonthlyIncome - totalMonthlyBills - totalSpentThisMonth;
+  const savingsRate = totalMonthlyIncome > 0 ? (Math.max(0, available) / totalMonthlyIncome) : 0;
   const healthScore = calcHealthScore(totalMonthlyIncome, totalMonthlyBills, savingsRate, streak);
 
   const sortedBills = [...bills].filter(b => b.active && b.dueDay).sort((a, b) => {
@@ -1728,17 +1730,22 @@ const SnapshotScreen = ({ state, onNav }) => {
 
       {/* AVAILABLE MONEY */}
       <div className="card" style={{ background: available > 0 ? "rgba(0,214,143,0.04)" : "rgba(255,77,77,0.04)", borderColor: available > 0 ? "rgba(0,214,143,0.2)" : "rgba(255,77,77,0.2)" }}>
-        <div className="card-label">Available This Month</div>
+        <div className="card-label">Left This Month</div>
         <div className={`hero-amount ${available > 0 ? "positive" : "negative"}`}>
           {formatCurrency(available, true)}
         </div>
-        <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+        <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
           <div className="pill pill-neutral">
-            <span>💼</span> {formatCurrency(totalMonthlyIncome, true)}/mo in
+            <span>💼</span> {formatCurrency(totalMonthlyIncome, true)} in
           </div>
           <div className="pill pill-red">
-            <span>📋</span> {formatCurrency(totalMonthlyBills, true)}/mo bills
+            <span>📋</span> {formatCurrency(totalMonthlyBills, true)} bills
           </div>
+          {totalSpentThisMonth > 0 && (
+            <div className="pill pill-red">
+              <span>💸</span> {formatCurrency(totalSpentThisMonth, true)} spent
+            </div>
+          )}
         </div>
         <button className="btn btn-secondary btn-full" style={{ marginTop: 14 }} onClick={() => onNav("afford")}>
           🤔 Can I afford something?
@@ -1910,7 +1917,7 @@ const AffordScreen = ({ state }) => {
   const breakdown = calcIncomeBreakdown(annualIncome);
 
   const result = amount && parseFloat(amount) > 0
-    ? calcAffordability(parseFloat(amount), totalMonthlyIncome, totalMonthlyBills, goals, breakdown)
+    ? calcAffordability(parseFloat(amount), totalMonthlyIncome - totalSpentThisMonth, totalMonthlyBills, goals, breakdown)
     : null;
 
   return (
@@ -1995,7 +2002,7 @@ const AffordScreen = ({ state }) => {
           <div style={{ fontSize: 32, marginBottom: 12 }}>🤔</div>
           <div style={{ fontSize: 15 }}>Enter an amount above to see if you can afford it</div>
           <div style={{ marginTop: 8, fontSize: 13 }}>
-            You have <strong style={{ color: "var(--primary)" }}>{formatCurrency(Math.max(0, totalMonthlyIncome - totalMonthlyBills))}</strong> available this month
+            You have <strong style={{ color: "var(--primary)" }}>{formatCurrency(Math.max(0, totalMonthlyIncome - totalMonthlyBills - totalSpentThisMonth))}</strong> available this month
           </div>
         </div>
       )}
@@ -2309,7 +2316,9 @@ const GoalsScreen = ({ state, onUpdate }) => {
 
   const totalMonthlyIncome = incomes.reduce((s, i) => s + calcMonthlyIncome(parseFloat(i.amount) || 0, i.frequency), 0);
   const totalMonthlyBills = calcMonthlyBills(bills);
-  const monthlySavings = Math.max(0, totalMonthlyIncome - totalMonthlyBills);
+  const thisMonth = new Date().toISOString().slice(0, 7);
+  const totalSpentThisMonth = (state.expenses || []).filter(e => e.date?.startsWith(thisMonth)).reduce((s, e) => s + parseFloat(e.amount || 0), 0);
+  const monthlySavings = Math.max(0, totalMonthlyIncome - totalMonthlyBills - totalSpentThisMonth);
 
   const saveGoal = () => {
     if (!form.name || !form.targetAmount) return;
@@ -2643,7 +2652,9 @@ const AIScreen = ({ state, onUpdate }) => {
   const { incomes, bills, goals } = state;
   const totalMonthlyIncome = incomes.reduce((s, i) => s + calcMonthlyIncome(parseFloat(i.amount) || 0, i.frequency), 0);
   const totalMonthlyBills = calcMonthlyBills(bills);
-  const available = Math.max(0, totalMonthlyIncome - totalMonthlyBills);
+  const thisMonthStr = new Date().toISOString().slice(0, 7);
+  const totalSpentThisMonth = (state.expenses || []).filter(e => e.date?.startsWith(thisMonthStr)).reduce((s, e) => s + parseFloat(e.amount || 0), 0);
+  const available = Math.max(0, totalMonthlyIncome - totalMonthlyBills - totalSpentThisMonth);
   const annualIncome = incomes.reduce((s, i) => s + calcAnnualIncome(parseFloat(i.amount) || 0, i.frequency), 0);
   const bd = calcIncomeBreakdown(annualIncome);
 
